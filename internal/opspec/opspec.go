@@ -80,6 +80,19 @@ type Operation struct {
 	// the raw API escape hatch needs it, because whether it writes depends on
 	// the method it was handed.
 	IsWrite func(args *Args) bool
+	// Refuses reports an invocation the operation will not perform at all,
+	// whatever the caller is allowed to do. It is distinct from IsWrite: a
+	// refused method is not a write waiting for approval, and telling a caller
+	// to go and plan it sends them round a loop that ends in the same refusal.
+	Refuses func(args *Args) error
+}
+
+// Refuse reports why an invocation will not be performed at all, or nil.
+func (o *Operation) Refuse(args *Args) error {
+	if o.Refuses == nil {
+		return nil
+	}
+	return o.Refuses(args)
 }
 
 // Writes reports whether an invocation with these arguments changes anything.

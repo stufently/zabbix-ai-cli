@@ -248,5 +248,13 @@ func apiCall() *opspec.Operation {
 		IsWrite: func(args *opspec.Args) bool {
 			return safety.ClassifyMethod(args.String("method")).Risk != safety.RiskRead
 		},
+		Refuses: func(args *opspec.Args) error {
+			method := args.String("method")
+			class := safety.ClassifyMethod(method)
+			if class.Allowed {
+				return nil
+			}
+			return service.DeniedMethodError(method, class)
+		},
 	}
 }

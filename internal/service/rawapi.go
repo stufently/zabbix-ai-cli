@@ -26,7 +26,7 @@ type RawResult struct {
 func (s *Service) RawRead(ctx context.Context, method string, params any) (*RawResult, error) {
 	class := safety.ClassifyMethod(method)
 	if !class.Allowed {
-		return nil, deniedMethodError(method, class)
+		return nil, DeniedMethodError(method, class)
 	}
 	if class.Risk != safety.RiskRead {
 		return nil, errs.Denied("%s is a %s method and cannot run as a read", method, class.Risk).
@@ -47,7 +47,7 @@ func (s *Service) RawRead(ctx context.Context, method string, params any) (*RawR
 func (s *Service) PlanRawCall(ctx context.Context, profile, method string, params any) (*safety.Plan, error) {
 	class := safety.ClassifyMethod(method)
 	if !class.Allowed {
-		return nil, deniedMethodError(method, class)
+		return nil, DeniedMethodError(method, class)
 	}
 	if class.Risk == safety.RiskRead {
 		return nil, errs.Usage("%s is a read method; it runs immediately and needs no plan", method)
@@ -67,7 +67,9 @@ func (s *Service) PlanRawCall(ctx context.Context, profile, method string, param
 	return plan, plan.Seal()
 }
 
-func deniedMethodError(method string, class safety.Classification) error {
+// DeniedMethodError explains a method this program will not call at all, with
+// the reason from the registry rather than a generic refusal.
+func DeniedMethodError(method string, class safety.Classification) error {
 	e := errs.Denied("the method %q is refused: %s", method, class.Reason)
 	if strings.Contains(class.Reason, "risk registry") {
 		return e.WithSuggestion("run 'zabbix-ai-cli schema api-methods' to list the methods this tool will call")

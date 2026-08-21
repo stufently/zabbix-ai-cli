@@ -468,3 +468,37 @@ func TestPlanStatusReportsAnUnauditedClaimAsApplying(t *testing.T) {
 		t.Errorf("status = %v, want applying", data["status"])
 	}
 }
+
+// A method the registry refuses outright is not a write awaiting approval.
+// Calling it one sends the caller to the planning tool, which refuses it again
+// for a reason they were never told the first time.
+func TestRefusedMethodIsExplainedRatherThanCalledAWrite(t *testing.T) {
+	h := newHarness(t, false, config.ScopeConfiguration)
+
+	for _, tc := range []struct {
+		method string
+		wants  string
+	}{
+		// Denied outright: a .get whose output carries credentials.
+		{"usermacro.get", "macro values"},
+		// Denied outright: creating a script is a step away from running one.
+		{"script.create", "command definition"},
+		// Not in the registry at all.
+		{"nonsense.frobnicate", "not in the risk registry"},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			res := h.call(t, "zabbix_api_call", map[string]any{"method": tc.method})
+			if !res.IsError {
+				t.Fatal("a refused method was accepted")
+			}
+			body := envelope(t, res)["error"].(map[string]any)
+			msg, _ := body["message"].(string)
+			if strings.Contains(msg, "is a write") {
+				t.Errorf("refusal reported as a write: %q", msg)
+			}
+			if !strings.Contains(msg, tc.wants) {
+				t.Errorf("message = %q, want it to explain %q", msg, tc.wants)
+			}
+		})
+	}
+}

@@ -80,6 +80,12 @@ func registerRead(server *sdk.Server, opts Options, op *opspec.Operation) {
 		if err != nil {
 			return toolError(err), nil
 		}
+		// A method this program refuses outright is not a write awaiting
+		// approval. Saying so here stops the caller being sent to the planning
+		// tool only to be refused there for the real reason.
+		if err := op.Refuse(args); err != nil {
+			return toolError(err), nil
+		}
 		// The escape hatch is read-only over MCP. A write travels through the
 		// planning tool like every other change.
 		if op.Writes(args) {
