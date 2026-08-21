@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.1] — 2026-08-21
+
 ### Added
 
 - 2026-08-21 — First working version.
