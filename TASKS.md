@@ -74,6 +74,25 @@ MCP back at `/home/deploy/bin/zabbix-ai-cli`.
 Bumping the pinned image later means editing that one `args` entry in
 `~/.claude.json` after the new tag's release finishes.
 
+## COMPLETED — 2026-08-21 — v0.1.1 and the refusal-message fix
+
+Live testing of the container MCP found a real bug: a method the risk registry
+refuses outright, `usermacro.get`, was reported as "a write, use the planner".
+The classifier returns an empty risk for a denied method and the write predicate
+read "not a read" as "write", so the caller was sent to a gate that would refuse
+it again for the wrong reason. Operations now answer a refusal question of their
+own, asked before the read-or-plan decision; `api.call` answers it from the risk
+registry. Released as v0.1.1 and the local MCP repinned to that tag.
+
+Verified against the published image: `usermacro.get` now explains that macro
+values hold passwords and that this output goes into a model's context.
+
+Note for the next release: `.goreleaser.yaml` sets `release: draft: true`, so
+the GitHub release is created as a draft and has to be published by hand
+(`gh release edit <id> --tag vX.Y.Z --draft=false --latest`). The archives are
+invisible until that step; the ghcr image and the MCP registry entry are not —
+those go out at build time.
+
 ## TODO — discovery and promotion
 
 Two assets do most of the work and both are already live: this repository
