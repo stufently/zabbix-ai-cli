@@ -52,6 +52,28 @@ repair in `api.NewClient`, whose scenario `httpClient` cannot produce.
 
 MCP binary on this host updated to `51f1643` via `make install`.
 
+## COMPLETED — 2026-08-21 — public release v0.1.0 and discovery
+
+The repository is public (gitleaks found nothing in its history first), tagged
+v0.1.0, and published: release archives for six platforms, `ghcr.io/stufently/
+zabbix-ai-cli` (anonymously pullable), and an entry in the official MCP registry
+as `io.github.stufently/zabbix-ai-cli`.
+
+Discovery work: repository description and 20 topics — `mcp-server` and
+`model-context-protocol` are what Glama and PulseMCP crawl for; README rewritten
+with per-client install snippets and a FAQ; CONTRIBUTING and a code of conduct.
+
+The local MCP now runs the ghcr image instead of `~/bin`, pinned to `0.1.0`.
+The profile is mounted read-only and the state directory read-write and shared,
+so a plan created by an agent is still approved from the host with
+`zabbix-ai-cli approve <id>`.
+
+Rollback: restore `~/.claude.json` from `.bak-20260821-102243`, which points the
+MCP back at `/home/deploy/bin/zabbix-ai-cli`.
+
+Bumping the pinned image later means editing that one `args` entry in
+`~/.claude.json` after the new tag's release finishes.
+
 ## IN_PROGRESS
 
 Nothing.
