@@ -1,0 +1,220 @@
+package ops
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/stufently/zabbix-ai-cli/internal/api"
+	"github.com/stufently/zabbix-ai-cli/internal/errs"
+	"github.com/stufently/zabbix-ai-cli/internal/opspec"
+	"github.com/stufently/zabbix-ai-cli/internal/output"
+	"github.com/stufently/zabbix-ai-cli/internal/safety"
+)
+
+// Status values reported in the data of a write operation.
+const (
+	StatusPlanned = "planned"
+	StatusApplied = "applied"
+)
+
+// PlanResult is what a write operation returns before anything has changed.
+type PlanResult struct {
+	Status  string          `json:"status"`
+	PlanID  string          `json:"plan_id"`
+	Summary string          `json:"summary"`
+	Risk    string          `json:"risk"`
+	Changes []safety.Change `json:"changes,omitempty"`
+	Impact  int             `json:"impact_count"`
+	Expires string          `json:"expires_at"`
+	// Approve is the exact command a person must run. It is spelled out so
+	// that an agent can relay it rather than invent one.
+	Approve string `json:"approve_command"`
+}
+
+// AppliedResult is what a write operation returns once it has run.
+type AppliedResult struct {
+	Status  string `json:"status"`
+	PlanID  string `json:"plan_id"`
+	Summary string `json:"summary"`
+	Result  any    `json:"result"`
+}
+
+// RunRead executes a read operation.
+func RunRead(ctx context.Context, env *opspec.Env, op *opspec.Operation, args *opspec.Args) (*output.Result, error) {
+	if op.Run == nil {
+		return nil, errs.Internal("%s has no read implementation", op.Name)
+	}
+	start := time.Now()
+	res, err := op.Run(ctx, env, args)
+	if err != nil {
+		return nil, err
+	}
+	res.Meta.Profile = env.Profile
+	res.Meta.ElapsedMS = time.Since(start).Milliseconds()
+	if v, verr := env.Service.Version(ctx); verr == nil {
+		res.Meta.ZabbixVersion = v.String()
+	}
+	return res, nil
+}
+
+// CreatePlan validates the request and stores a plan for later approval.
+func CreatePlan(ctx context.Context, env *opspec.Env, op *opspec.Operation, args *opspec.Args) (*safety.Plan, error) {
+	if op.Plan == nil {
+		return nil, errs.Internal("%s is not a write operation", op.Name)
+	}
+	if err := CheckScope(env, op); err != nil {
+		return nil, err
+	}
+	plan, err := op.Plan(ctx, env, args)
+	if err != nil {
+		return nil, err
+	}
+	if env.Plans != nil {
+		if err := env.Plans.Save(plan); err != nil {
+			return nil, err
+		}
+	}
+	return plan, nil
+}
+
+// PlanOutput renders a stored plan as an operation result.
+func PlanOutput(env *opspec.Env, plan *safety.Plan) *output.Result {
+	res := &output.Result{
+		Data: PlanResult{
+			Status:  StatusPlanned,
+			PlanID:  plan.ID,
+			Summary: plan.Summary,
+			Risk:    string(plan.Risk),
+			Changes: plan.Changes,
+			Impact:  plan.ImpactCount,
+			Expires: plan.ExpiresAt.Format(time.RFC3339),
+			Approve: ApproveCommand(plan),
+		},
+	}
+	res.Meta.Returned = 1
+	res.Meta.Profile = env.Profile
+	res.Table = &output.Table{
+		Headers: []string{"PLAN"},
+		Rows:    [][]string{{plan.Describe()}},
+		Notes: []string{
+			"Nothing has changed yet.",
+			"To apply it: " + ApproveCommand(plan),
+		},
+	}
+	return res
+}
+
+// ApproveCommand renders the exact command that applies a plan.
+func ApproveCommand(plan *safety.Plan) string {
+	cmd := "zabbix-ai-cli approve " + plan.ID
+	if plan.RequiresConfirmName != "" {
+		cmd += fmt.Sprintf(" --confirm %q", plan.RequiresConfirmName)
+	}
+	return cmd
+}
+
+// ApplyOptions carry the authorisation for a change.
+type ApplyOptions struct {
+	// Confirm is the exact object name echoed back for a destructive change.
+	Confirm string
+	// Approval records how the change was authorised, for the audit log.
+	Approval safety.Approval
+}
+
+// Apply executes a plan after checking every gate.
+//
+// The order matters: scope, then integrity, then expiry, then the echoed
+// confirmation, and only then the preconditions against live Zabbix. Each
+// check is cheap and each one refuses on its own.
+func Apply(ctx context.Context, env *opspec.Env, plan *safety.Plan, opts ApplyOptions) (*output.Result, error) {
+	op, ok := Lookup(planOperationName(plan))
+	if !ok {
+		return nil, errs.Internal("plan %s names an unknown operation %q", plan.ID, plan.Operation)
+	}
+	if err := CheckScope(env, op); err != nil {
+		return nil, err
+	}
+	if plan.Profile != env.Profile {
+		return nil, errs.Denied("plan %s was made against profile %q but the active profile is %q",
+			plan.ID, plan.Profile, env.Profile).
+			WithSuggestion("re-run with --profile %s, or create a new plan", plan.Profile)
+	}
+	if err := plan.Verify(time.Now()); err != nil {
+		code := errs.CodePlanStale
+		if plan.Expired(time.Now()) {
+			code = errs.CodePlanExpired
+		}
+		return nil, errs.New(code, errs.ExitFailure, "%s", err.Error()).
+			WithSuggestion("run the original command again to build a fresh plan")
+	}
+	if plan.RequiresConfirmName != "" && opts.Confirm != plan.RequiresConfirmName {
+		return nil, errs.ApprovalRequired(
+			"this change is destructive and needs the target named back exactly").
+			WithSuggestion("run: %s", ApproveCommand(plan))
+	}
+
+	result, applyErr := env.Service.ApplyPlan(ctx, plan)
+	if env.Audit != nil {
+		entry := safety.AuditEntry{
+			Profile:   env.Profile,
+			Operation: plan.Operation,
+			Risk:      plan.Risk,
+			PlanID:    plan.ID,
+			Approval:  opts.Approval,
+			Resources: plan.Resources,
+			Outcome:   "applied",
+		}
+		if redacted, ok := api.Redact(plan.Params).(map[string]any); ok {
+			entry.Params = redacted
+		}
+		if applyErr != nil {
+			entry.Outcome = "failed"
+			entry.Error = applyErr.Error()
+		}
+		_ = env.Audit.Append(entry)
+	}
+	if applyErr != nil {
+		return nil, applyErr
+	}
+	if env.Plans != nil {
+		_ = env.Plans.Delete(plan.ID)
+	}
+
+	res := &output.Result{Data: AppliedResult{
+		Status:  StatusApplied,
+		PlanID:  plan.ID,
+		Summary: plan.Summary,
+		Result:  result,
+	}}
+	res.Meta.Returned = 1
+	res.Meta.Profile = env.Profile
+	res.Table = &output.Table{
+		Headers: []string{"RESULT"},
+		Rows:    [][]string{{"applied: " + plan.Summary}},
+	}
+	return res, nil
+}
+
+// planOperationName maps a plan back to its registry entry. The raw API
+// escape hatch stores a single operation name for every method it can call.
+func planOperationName(plan *safety.Plan) string {
+	if plan.Operation == "api.call" {
+		return "api.call"
+	}
+	// Plans use the same canonical names as the registry, except that the
+	// registry groups trigger state changes under two commands.
+	switch plan.Operation {
+	case "trigger.enable":
+		return "triggers.enable"
+	case "trigger.disable":
+		return "triggers.disable"
+	case "event.acknowledge":
+		return "events.acknowledge"
+	}
+	if strings.HasPrefix(plan.Operation, "maintenance.") {
+		return plan.Operation
+	}
+	return plan.Operation
+}
