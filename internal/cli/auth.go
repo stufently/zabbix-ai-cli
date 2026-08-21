@@ -40,6 +40,13 @@ func loginCommand(g *globals) *cobra.Command {
 			}
 			existing := cfg.Profiles[name]
 
+			// Checked before anything reads the token: with --token-stdin the
+			// secret is consumed and gone, and rejecting the flag afterwards
+			// makes the caller pipe it a second time.
+			if store != "" && store != "file" && store != "keyring" {
+				return errs.Usage("--store must be file or keyring")
+			}
+
 			if url == "" {
 				url = existing.URL
 			}
@@ -76,9 +83,6 @@ func loginCommand(g *globals) *cobra.Command {
 				} else {
 					backend = "file"
 				}
-			}
-			if backend != "file" && backend != "keyring" {
-				return errs.Usage("--store must be file or keyring")
 			}
 			profile := config.Profile{
 				URL:            strings.TrimSpace(url),

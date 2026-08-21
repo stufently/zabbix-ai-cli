@@ -483,3 +483,16 @@ func TestInvalidGlobalOptionsAreUsageErrors(t *testing.T) {
 		}
 	}
 }
+
+// With --token-stdin the secret is consumed before the flag is validated, so a
+// rejected value means the caller has to pipe the token in again.
+func TestLoginValidatesTheStoreBeforeReadingTheToken(t *testing.T) {
+	h := newHarness(t)
+	got := h.run("login", "--store", "keychain", "--token-stdin", "--url", h.server.URL)
+	if got.code != errs.ExitUsage {
+		t.Fatalf("exit = %d, want %d (%s%s)", got.code, errs.ExitUsage, got.stdout, got.stderr)
+	}
+	if !strings.Contains(got.stdout+got.stderr, "--store must be file or keyring") {
+		t.Errorf("the refusal did not name the flag: %s%s", got.stdout, got.stderr)
+	}
+}

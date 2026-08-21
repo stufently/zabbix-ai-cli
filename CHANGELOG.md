@@ -66,6 +66,34 @@ Found by independent review of the finished implementation and fixed before rele
 
 ### Fixed
 
+Found by review of the Go 1.27 hardening pass:
+
+- `plans list` failed outright if any one plan was claimed, discarded or expired
+  between reading the directory and reading that plan — an operator approving a
+  plan in a terminal made every other outstanding plan invisible to a concurrent
+  reader. A plan vanishing under the listing is now skipped; a corrupt file
+  still stops it.
+- `zabbix_plan_status` reported "applying — check again for its audited outcome"
+  for up to two full plan lifetimes when discarding a claim failed after the
+  change was applied. The audit log now wins over a leftover claim.
+- `alert why` resolved recipients with two serial `user.get` calls per candidate
+  and no reuse, so an installation with a few dozen notifying actions ran past
+  the client timeout and answered nothing. Identical lookups are now made once.
+- `read_error` carried Zabbix-controlled text into JSON and into a table cell
+  without sanitising, unlike every other API-sourced string. Control characters
+  and escapes reached the terminal and the field-length bound was bypassed.
+- A host whose visible name is a long numeric asset tag stopped resolving: the
+  ID fast path returned Zabbix's refusal instead of falling back to the name
+  search.
+- `login --store <invalid> --token-stdin` consumed the piped token before
+  validating the flag, so the secret was gone and had to be piped again.
+- `make fmt-check` failed on the Go toolchain's own test data, and `make fmt`
+  would have rewritten it: the build cache lived inside the repository, which is
+  bind-mounted into the container as the source tree. The cache moved out.
+- The `go` directive went back to 1.25.0. It is a lower bound on consumers, not
+  a build pin — verified: the module builds unchanged on a 1.25 toolchain with
+  `GOTOOLCHAIN=local`. Dockerfile, Makefile and CI stay pinned to 1.27.0.
+
 Behaviours found against a live Zabbix 7.4.10 server, each of which produces a
 plausible wrong answer rather than an error:
 

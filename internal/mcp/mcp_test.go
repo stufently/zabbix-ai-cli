@@ -406,3 +406,65 @@ func TestErrorsAreReportedInsideTheResult(t *testing.T) {
 		t.Errorf("code = %v", body["code"])
 	}
 }
+
+// Discarding a claim can fail after the change was applied, and a leftover
+// claim outlives two whole TTLs. Once the audit log records an outcome, that
+// is the answer — otherwise the tool tells the caller to "check again" for
+// something that has already happened.
+func TestPlanStatusPrefersTheAuditedOutcomeOverALeftoverClaim(t *testing.T) {
+	h := newHarness(t, false, config.ScopeMaintenance)
+	plan, err := safety.NewPlan("maintenance.create", "test", safety.RiskWrite, safety.ScopeMaintenance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Summary = "Create maintenance window"
+	if err := plan.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.plans.Save(plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.plans.Claim(plan.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.audit.Append(safety.AuditEntry{
+		Profile:   "test",
+		Operation: "maintenance.create",
+		Risk:      safety.RiskWrite,
+		PlanID:    plan.ID,
+		Outcome:   "applied",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	res := h.call(t, "zabbix_plan_status", map[string]any{"plan_id": plan.ID})
+	data := envelope(t, res)["data"].(map[string]any)
+	if data["status"] != "applied" {
+		t.Errorf("status = %v, want the audited outcome", data["status"])
+	}
+}
+
+// A claim with no audit entry still means the change is in flight.
+func TestPlanStatusReportsAnUnauditedClaimAsApplying(t *testing.T) {
+	h := newHarness(t, false, config.ScopeMaintenance)
+	plan, err := safety.NewPlan("maintenance.create", "test", safety.RiskWrite, safety.ScopeMaintenance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Summary = "Create maintenance window"
+	if err := plan.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.plans.Save(plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.plans.Claim(plan.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	res := h.call(t, "zabbix_plan_status", map[string]any{"plan_id": plan.ID})
+	data := envelope(t, res)["data"].(map[string]any)
+	if data["status"] != "applying" {
+		t.Errorf("status = %v, want applying", data["status"])
+	}
+}

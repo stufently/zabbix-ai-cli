@@ -7,6 +7,7 @@ package zbxtest
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -104,13 +105,21 @@ func applyFilter(result any, params map[string]any) any {
 func filterMatches(got, want any) bool {
 	if list, ok := want.([]any); ok {
 		for _, w := range list {
-			if got == w {
+			if sameScalar(got, w) {
 				return true
 			}
 		}
 		return false
 	}
-	return got == want
+	return sameScalar(got, want)
+}
+
+// sameScalar compares the way Zabbix does. Its responses render every column
+// as a string while its filters accept numbers, so {"eventsource": 0} matches
+// a record carrying "0". Comparing the Go values directly would make this fake
+// stricter than the server and hide a working caller behind an empty result.
+func sameScalar(got, want any) bool {
+	return fmt.Sprint(got) == fmt.Sprint(want)
 }
 
 // Fail registers a Zabbix error for a method.

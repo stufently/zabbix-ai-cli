@@ -194,7 +194,7 @@ func (s *Service) latestForItems(ctx context.Context, items []wireItem) ([]Value
 				point, err := s.latestPoint(ctx, w)
 				if err != nil {
 					values[i].NoData = false
-					values[i].ReadError = err.Error()
+					values[i].ReadError = output.Sanitise(err.Error())
 					return err
 				}
 				if point == nil {
@@ -361,7 +361,7 @@ func (s *Service) History(ctx context.Context, q HistoryQuery) (Host, []Series, 
 			run: func(ctx context.Context) error {
 				points, truncated, err := s.historyFor(ctx, w, window, limit)
 				if err != nil {
-					series[i].ReadError = err.Error()
+					series[i].ReadError = output.Sanitise(err.Error())
 					return err
 				}
 				series[i].Points = points

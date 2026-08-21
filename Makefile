@@ -9,7 +9,11 @@ VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 LDFLAGS    := -s -w -X github.com/stufently/zabbix-ai-cli/internal/cli.Version=$(VERSION)
 UID        := $(shell id -u)
 GID        := $(shell id -g)
-CACHE      ?= $(CURDIR)/.gocache
+# The cache lives outside the working tree: it is bind-mounted into /src, so a
+# cache inside the repository puts a downloaded Go toolchain's sources under
+# "gofmt -l ." — which fails fmt-check on files that are not ours, and which
+# "make fmt" would happily rewrite.
+CACHE      ?= $(HOME)/.cache/zabbix-ai-cli
 
 # Containers write into bind mounts as the invoking user, so build artefacts and
 # caches stay owned by the person who ran make rather than by root.

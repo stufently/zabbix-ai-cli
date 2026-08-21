@@ -2,6 +2,7 @@ package safety
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -135,6 +136,16 @@ func (s *Store) List() ([]*Plan, error) {
 		}
 		p, err := s.Load(id)
 		if err != nil {
+			// The directory listing is a snapshot. Between reading it and
+			// reading a plan, an applier can claim that plan or discard it,
+			// and a concurrent List can delete it for having expired — all of
+			// which surface as "not found". One plan disappearing under a
+			// reader must not hide every other outstanding plan, so only a
+			// corrupt or unreadable file stops the listing.
+			var e *errs.E
+			if errors.As(err, &e) && e.Code == errs.CodePlanNotFound {
+				continue
+			}
 			return nil, err
 		}
 		if p.Expired(now) {

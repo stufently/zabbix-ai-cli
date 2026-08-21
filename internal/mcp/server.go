@@ -236,7 +236,12 @@ func planStatus(env *opspec.Env, planID string) (*output.Result, error) {
 		if claimErr != nil {
 			return nil, claimErr
 		}
-		if claimed {
+		// A claim only means "applying" while no outcome has been recorded.
+		// Discarding the claim can fail after a change was applied, and a
+		// leftover claim survives two whole TTLs, so reporting "check again"
+		// on the strength of the file alone gives advice that never comes
+		// true. The audit log is the authority once it has an entry.
+		if claimed && !auditKnows(env, planID) {
 			data["status"] = "applying"
 			data["detail"] = "the plan has been claimed by an applier; check again for its audited outcome"
 			res := &output.Result{Data: data}
@@ -317,4 +322,15 @@ func toolError(err error) *sdk.CallToolResult {
 		Content:           []sdk.Content{&sdk.TextContent{Text: string(encoded)}},
 		StructuredContent: body,
 	}
+}
+
+// auditKnows reports whether the audit log already records an outcome for a
+// plan. A failure to read the log is treated as "no entry": the caller falls
+// through to its own audit lookup, which reports the failure properly.
+func auditKnows(env *opspec.Env, planID string) bool {
+	if env.Audit == nil {
+		return false
+	}
+	entry, err := env.Audit.Find(planID)
+	return err == nil && entry != nil
 }

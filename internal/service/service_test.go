@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -813,5 +814,77 @@ func recipient(id, username string) map[string]any {
 			"mediatypeid": "1", "sendto": username + "@example.com", "active": "0",
 			"severity": "63", "period": "1-7,00:00-24:00",
 		}},
+	}
+}
+
+// Every message operation of every action produces a candidate, and each
+// candidate resolved its recipients with its own API calls. On a site with a
+// few dozen notifying actions that walk runs past the client timeout, so the
+// explanation answers nothing instead of answering slowly.
+func TestAlertWhyDoesNotRefetchTheSameRecipientsPerAction(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	srv.Reply("event.get", []any{map[string]any{
+		"eventid": "42", "clock": nowClock(), "name": "Disk full", "severity": "4",
+		"acknowledged": "0", "value": "1", "objectid": "9", "r_eventid": "0",
+		"hosts": []any{}, "suppression_data": []any{},
+	}})
+	srv.Reply("alert.get", []any{})
+	// Twenty actions that all notify the same on-call group, which is what a
+	// real installation looks like.
+	actions := make([]any, 0, 20)
+	for i := 1; i <= 20; i++ {
+		actions = append(actions, map[string]any{
+			"actionid": itoaTest(i), "name": "Notify " + itoaTest(i), "status": "0", "eventsource": "0",
+			"operations": []any{map[string]any{
+				"operationtype": "0", "opmessage": map[string]any{"mediatypeid": "1"},
+				"opmessage_usr": []any{}, "opmessage_grp": []any{map[string]any{"usrgrpid": "7"}},
+			}},
+		})
+	}
+	srv.Reply("action.get", actions)
+	srv.Reply("mediatype.get", []any{map[string]any{"mediatypeid": "1", "name": "Email", "status": "0"}})
+	srv.Reply("user.get", []any{map[string]any{
+		"userid": "20", "username": "operator",
+		"medias": []any{map[string]any{
+			"mediatypeid": "1", "sendto": "operator@example.com",
+			"active": "0", "severity": "63", "period": "1-7,00:00-24:00",
+		}},
+	}})
+
+	if _, err := newService(t, srv).ExplainAlert(context.Background(), "42"); err != nil {
+		t.Fatalf("ExplainAlert: %v", err)
+	}
+	calls := len(srv.CallsTo("user.get"))
+	if calls == 0 {
+		t.Fatal("no recipients were resolved at all, so this proves nothing")
+	}
+	if calls > 2 {
+		t.Errorf("user.get called %d times for one repeated group; the lookup is not being reused", calls)
+	}
+}
+
+func itoaTest(n int) string { return strconv.Itoa(n) }
+
+// A host ID wins over a name, but a host whose visible name is a numeric asset
+// tag must still resolve: Zabbix rejects a non-existent ID outright, and
+// treating that refusal as failure made the host unreachable by name.
+func TestResolveHostFallsBackWhenANumericNameIsNotAnID(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	srv.Handle("host.get", func(params map[string]any) (any, error) {
+		if _, byID := params["hostids"]; byID {
+			return nil, &zbxtest.APIError{
+				Code: -32602, Message: "Invalid params.",
+				Data: `Invalid parameter "/hostids/1": a number is too large.`,
+			}
+		}
+		return []any{zbxtest.Host("10", "1000000000000000000001", nil)}, nil
+	})
+
+	host, err := newService(t, srv).ResolveHost(context.Background(), "1000000000000000000001")
+	if err != nil {
+		t.Fatalf("ResolveHost: %v", err)
+	}
+	if host.Name != "1000000000000000000001" {
+		t.Errorf("resolved %q", host.Name)
 	}
 }

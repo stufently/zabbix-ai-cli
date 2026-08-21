@@ -332,10 +332,11 @@ func (s *Service) ResolveHost(ctx context.Context, pattern string) (Host, error)
 			"selectTags":            "extend",
 			"selectParentTemplates": []string{"templateid", "name"},
 		}
-		if err := s.client.CallIdempotent(ctx, "host.get", params, &wire); err != nil {
-			return Host{}, errs.FromAPI(err)
-		}
-		if len(wire) == 1 {
+		// A miss falls through to the name search on purpose, including when
+		// Zabbix rejects the value outright: any digit string is a plausible
+		// host ID, and a host whose visible name is a long numeric asset tag
+		// would otherwise stop resolving at all.
+		if err := s.client.CallIdempotent(ctx, "host.get", params, &wire); err == nil && len(wire) == 1 {
 			return wire[0].toHost(), nil
 		}
 	}

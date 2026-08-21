@@ -391,3 +391,55 @@ func TestSecretBearingReadsAreRefusedConsistently(t *testing.T) {
 		}
 	}
 }
+
+// A plan claimed by an applier while a listing is in flight must not take the
+// rest of the listing down with it: the operator would see an error where
+// every other outstanding plan should have been.
+func TestListSurvivesAPlanVanishingUnderIt(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := newPlan(t)
+	if err := store.Save(kept); err != nil {
+		t.Fatal(err)
+	}
+	claimed := newPlan(t)
+	if err := store.Save(claimed); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Claim(claimed.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	plans, err := store.List()
+	if err != nil {
+		t.Fatalf("List failed because one plan was being applied: %v", err)
+	}
+	if len(plans) != 1 || plans[0].ID != kept.ID {
+		ids := make([]string, len(plans))
+		for i, p := range plans {
+			ids[i] = p.ID
+		}
+		t.Errorf("List = %v, want only %s", ids, kept.ID)
+	}
+}
+
+// Corruption still stops the listing: it is not a plan disappearing, it is a
+// file that should be readable and is not.
+func TestListStillReportsACorruptPlan(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newPlan(t)
+	if err := store.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.dir, p.ID+".json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err == nil {
+		t.Error("a corrupt plan file must be reported, not skipped")
+	}
+}

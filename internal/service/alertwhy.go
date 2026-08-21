@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -475,9 +476,19 @@ func (s *Service) checkRecipients(ctx context.Context, exp *AlertExplanation, ca
 		typeByID[mediaType.ID] = mediaType
 	}
 	usersTruncated := false
+	// Actions overwhelmingly reuse the same operator group, and every message
+	// operation of every action contributes a candidate. Without this the
+	// walk is two serial user.get calls per candidate, which on a site with a
+	// few dozen notifying actions runs the explanation past the client
+	// timeout — the command answers nothing instead of answering slowly.
+	cached := make(map[string][]wireRecipientUser)
 	fetch := func(filter string, ids []string) ([]wireRecipientUser, error) {
 		if len(ids) == 0 {
 			return nil, nil
+		}
+		key := cacheKey(filter, ids)
+		if hit, ok := cached[key]; ok {
+			return hit, nil
 		}
 		params := map[string]any{
 			"output":       []string{"userid", "username", "name"},
@@ -494,6 +505,7 @@ func (s *Service) checkRecipients(ctx context.Context, exp *AlertExplanation, ca
 		if truncated {
 			usersTruncated = true
 		}
+		cached[key] = batch
 		return batch, nil
 	}
 	severityBit := 1 << exp.Event.SeverityCode
@@ -594,4 +606,12 @@ func appendUnique(list []string, v string) []string {
 		}
 	}
 	return append(list, v)
+}
+
+// cacheKey identifies one user.get lookup by its filter and the set of IDs it
+// asks for, so the same set asked for twice costs one round trip.
+func cacheKey(filter string, ids []string) string {
+	sorted := append([]string(nil), ids...)
+	sort.Strings(sorted)
+	return filter + "\x00" + strings.Join(sorted, ",")
 }
