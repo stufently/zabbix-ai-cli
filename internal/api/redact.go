@@ -9,15 +9,27 @@ import (
 const Redacted = "[REDACTED]"
 
 var sensitiveKeys = map[string]bool{
-	"password":    true,
-	"token":       true,
-	"auth":        true,
-	"sessionid":   true,
-	"current_pas": true,
-	"secret":      true,
-	"private_key": true,
-	"ssh_key":     true,
-	"tls_psk":     true,
+	"password":         true,
+	"passwd":           true,
+	"token":            true,
+	"auth":             true,
+	"sessionid":        true,
+	"current_pas":      true,
+	"secret":           true,
+	"private_key":      true,
+	"ssh_key":          true,
+	"tls_psk":          true,
+	"tls_psk_identity": true,
+	// SNMP community strings are shared credentials that Zabbix keeps in
+	// ordinary configuration fields, and a secret macro's value arrives under
+	// the same plain name as any other.
+	"community":      true,
+	"snmp_community": true,
+	"http_password":  true,
+	"webhook_secret": true,
+	"client_secret":  true,
+	"bind_password":  true,
+	"api_token":      true,
 }
 
 // redactBody prepares a request body for debug logging. Values of sensitive

@@ -251,31 +251,62 @@ func rankHosts(hosts []Host, search string) {
 	})
 }
 
-func (s *Service) hostGroupIDs(ctx context.Context, name string) ([]string, error) {
-	params := map[string]any{
-		"output": []string{"groupid", "name"},
-		"limit":  50,
-	}
-	applySearch(params, name, "name")
-	var groups []struct {
+// resolveHostGroups turns one pattern into the groups it names.
+//
+// Substring matching is what makes patterns useful, but it also means a group
+// named "Linux" would silently widen into "Linux staging" and "Embedded
+// Linux". An exact name therefore wins outright, and it is looked up in its
+// own query on purpose: the substring search is capped, so on an installation
+// with many similarly named groups the exactly named one could fall outside
+// the returned window and the widening would go unnoticed.
+func (s *Service) resolveHostGroups(ctx context.Context, name string) ([]namedID, error) {
+	type wireGroup struct {
 		GroupID string `json:"groupid"`
 		Name    string `json:"name"`
 	}
+	var exact []wireGroup
+	exactParams := map[string]any{
+		"output": []string{"groupid", "name"},
+		"filter": map[string]any{"name": name},
+	}
+	if err := s.client.CallIdempotent(ctx, "hostgroup.get", exactParams, &exact); err != nil {
+		return nil, errs.FromAPI(err)
+	}
+	if len(exact) > 0 {
+		return []namedID{{ID: exact[0].GroupID, Name: output.Sanitise(exact[0].Name)}}, nil
+	}
+
+	params := map[string]any{
+		"output": []string{"groupid", "name"},
+		"limit":  200,
+	}
+	applySearch(params, name, "name")
+	var groups []wireGroup
 	if err := s.client.CallIdempotent(ctx, "hostgroup.get", params, &groups); err != nil {
 		return nil, errs.FromAPI(err)
 	}
-	// Substring matching is what makes patterns useful, but it also means a
-	// group named "Linux" would silently widen into "Linux staging" and
-	// "Embedded Linux". An exact name wins outright; only a pattern that
-	// matches nothing exactly is treated as a set.
+	// Zabbix's filter is case-sensitive, so a pattern typed in another case
+	// gets its exact match here instead.
 	for _, g := range groups {
 		if strings.EqualFold(g.Name, name) {
-			return []string{g.GroupID}, nil
+			return []namedID{{ID: g.GroupID, Name: output.Sanitise(g.Name)}}, nil
 		}
+	}
+	out := make([]namedID, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, namedID{ID: g.GroupID, Name: output.Sanitise(g.Name)})
+	}
+	return out, nil
+}
+
+func (s *Service) hostGroupIDs(ctx context.Context, name string) ([]string, error) {
+	groups, err := s.resolveHostGroups(ctx, name)
+	if err != nil {
+		return nil, err
 	}
 	ids := make([]string, 0, len(groups))
 	for _, g := range groups {
-		ids = append(ids, g.GroupID)
+		ids = append(ids, g.ID)
 	}
 	return ids, nil
 }

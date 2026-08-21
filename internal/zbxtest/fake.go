@@ -61,8 +61,56 @@ func (s *Server) Handle(method string, h Handler) {
 }
 
 // Reply registers a fixed answer for a method.
+//
+// The answer is passed through the same "filter" semantics Zabbix applies:
+// exact equality on each named field. Without that a fake would answer an
+// exact-name lookup with every row it holds, and a caller that relies on the
+// filter would look correct here and be wrong against a real server.
 func (s *Server) Reply(method string, result any) {
-	s.Handle(method, func(map[string]any) (any, error) { return result, nil })
+	s.Handle(method, func(params map[string]any) (any, error) {
+		return applyFilter(result, params), nil
+	})
+}
+
+func applyFilter(result any, params map[string]any) any {
+	filter, ok := params["filter"].(map[string]any)
+	if !ok || len(filter) == 0 {
+		return result
+	}
+	rows, ok := result.([]any)
+	if !ok {
+		return result
+	}
+	kept := make([]any, 0, len(rows))
+	for _, row := range rows {
+		fields, ok := row.(map[string]any)
+		if !ok {
+			continue
+		}
+		match := true
+		for k, want := range filter {
+			if !filterMatches(fields[k], want) {
+				match = false
+				break
+			}
+		}
+		if match {
+			kept = append(kept, row)
+		}
+	}
+	return kept
+}
+
+func filterMatches(got, want any) bool {
+	if list, ok := want.([]any); ok {
+		for _, w := range list {
+			if got == w {
+				return true
+			}
+		}
+		return false
+	}
+	return got == want
 }
 
 // Fail registers a Zabbix error for a method.

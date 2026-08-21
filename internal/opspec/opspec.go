@@ -10,6 +10,7 @@ package opspec
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,7 +46,15 @@ type Param struct {
 	Default    any
 	Enum       []string
 	Example    string
+	// Min and Max bound an integer parameter. They are enforced when the
+	// value is read and published in the MCP schema, so a caller is told the
+	// range rather than discovering it by having a value silently ignored.
+	Min *int
+	Max *int
 }
+
+// IntRange is shorthand for the bounds of an integer parameter.
+func IntRange(min, max int) (*int, *int) { return &min, &max }
 
 // Operation is one task the tool can perform.
 type Operation struct {
@@ -298,22 +307,37 @@ func coerce(o *Operation, p Param, raw any) (any, error) {
 		}
 		return s, nil
 	case TypeInt:
+		var n int
 		switch t := raw.(type) {
 		case int:
-			return t, nil
+			n = t
 		case int64:
-			return int(t), nil
+			n = int(t)
 		case float64:
-			return int(t), nil
+			// JSON has no integer type, so a fractional value arrives here as
+			// a float. Truncating it silently would turn "limit: 0.5" into
+			// "limit: 0", which reads as the default rather than as a
+			// mistake.
+			if t != math.Trunc(t) {
+				return nil, errs.Usage("%s: %q must be a whole number, not %v", o.CommandPath(), p.Name, t)
+			}
+			n = int(t)
 		case string:
-			n, err := strconv.Atoi(strings.TrimSpace(t))
+			parsed, err := strconv.Atoi(strings.TrimSpace(t))
 			if err != nil {
 				return nil, errs.Usage("%s: %q must be a whole number", o.CommandPath(), p.Name)
 			}
-			return n, nil
+			n = parsed
 		default:
 			return nil, errs.Usage("%s: %q must be a whole number", o.CommandPath(), p.Name)
 		}
+		if p.Min != nil && n < *p.Min {
+			return nil, errs.Usage("%s: %q must be at least %d", o.CommandPath(), p.Name, *p.Min)
+		}
+		if p.Max != nil && n > *p.Max {
+			return nil, errs.Usage("%s: %q may not exceed %d", o.CommandPath(), p.Name, *p.Max)
+		}
+		return n, nil
 	case TypeBool:
 		switch t := raw.(type) {
 		case bool:
@@ -391,6 +415,12 @@ func (o *Operation) InputSchema() map[string]any {
 		switch p.Type {
 		case TypeInt:
 			prop["type"] = "integer"
+			if p.Min != nil {
+				prop["minimum"] = *p.Min
+			}
+			if p.Max != nil {
+				prop["maximum"] = *p.Max
+			}
 		case TypeBool:
 			prop["type"] = "boolean"
 		case TypeStringList:

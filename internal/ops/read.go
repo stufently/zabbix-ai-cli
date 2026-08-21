@@ -14,10 +14,17 @@ import (
 // limitParam is the shared bound on how much an operation may return. Every
 // list operation carries one, because an unbounded answer is how a single
 // query fills an agent's context window.
+// maxLimit is the ceiling every list operation shares. It exists so that a
+// caller cannot ask for an answer larger than the context it has to read it
+// in, whatever the operation's own default is.
+const maxLimit = 500
+
 func limitParam(def int) opspec.Param {
+	min, max := opspec.IntRange(1, maxLimit)
 	return opspec.Param{
 		Name: "limit", Type: opspec.TypeInt, Default: def,
-		Description: fmt.Sprintf("maximum rows to return (default %d); the result reports whether it was truncated", def),
+		Min: min, Max: max,
+		Description: fmt.Sprintf("maximum rows to return, 1 to %d (default %d); the result reports whether it was truncated", maxLimit, def),
 	}
 }
 

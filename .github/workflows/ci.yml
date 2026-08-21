@@ -71,6 +71,19 @@ jobs:
           cache: true
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+  container:
+    name: Container starts as a non-root user
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The image runs distroless as uid 65532 and writes plans to
+      # /var/lib/zabbix-ai-cli. A missing or root-owned state directory only
+      # shows up at runtime, so it is exercised here rather than assumed.
+      - name: Build the image
+        run: docker build -t zabbix-ai-cli:ci .
+      - name: The state directory is writable
+        run: docker run --rm zabbix-ai-cli:ci plans list | tee /dev/stderr | grep -q '"ok": true'
+
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest

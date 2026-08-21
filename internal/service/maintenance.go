@@ -321,25 +321,19 @@ func (s *Service) expandGroupPatterns(ctx context.Context, patterns []string) ([
 		if p == "" {
 			continue
 		}
-		var groups []struct {
-			GroupID string `json:"groupid"`
-			Name    string `json:"name"`
-		}
-		params := map[string]any{
-			"output": []string{"groupid", "name"},
-			"limit":  200,
-		}
-		applySearch(params, p, "name")
-		if err := s.client.CallIdempotent(ctx, "hostgroup.get", params, &groups); err != nil {
-			return nil, errs.FromAPI(err)
+		// The same exact-name rule as the read paths, and for a stronger
+		// reason: this list decides which hosts stop alerting.
+		groups, err := s.resolveHostGroups(ctx, p)
+		if err != nil {
+			return nil, err
 		}
 		if len(groups) == 0 {
 			return nil, errs.NotFound("no host group matches %q", p)
 		}
 		for _, g := range groups {
-			if !seen[g.GroupID] {
-				seen[g.GroupID] = true
-				out = append(out, namedID{ID: g.GroupID, Name: output.Sanitise(g.Name)})
+			if !seen[g.ID] {
+				seen[g.ID] = true
+				out = append(out, g)
 			}
 		}
 	}
@@ -431,7 +425,17 @@ func (s *Service) PlanMaintenanceExpire(ctx context.Context, profile, id string)
 		}},
 	}
 	plan.ImpactCount = len(m.Hosts)
-	plan.Summary = fmt.Sprintf("End maintenance %q now; %d host(s) resume alerting", m.Name, len(m.Hosts))
+	// Zabbix will not accept a window shorter than its minimum period, so a
+	// window that started moments ago cannot end until that minimum is up.
+	// The summary says when alerting actually resumes rather than "now",
+	// which would be the same misleading report the guard above exists to
+	// prevent.
+	if end.After(now.Truncate(time.Minute)) {
+		plan.Summary = fmt.Sprintf("End maintenance %q at %s, the earliest Zabbix allows for a window this new; %d host(s) resume alerting then",
+			m.Name, rfc3339(end), len(m.Hosts))
+	} else {
+		plan.Summary = fmt.Sprintf("End maintenance %q now; %d host(s) resume alerting", m.Name, len(m.Hosts))
+	}
 	plan.Changes = []safety.Change{{Field: "ends", Before: m.ActiveTill, After: rfc3339(end)}}
 	plan.Resources = []safety.Resource{{Kind: "maintenance", ID: id, Name: m.Name}}
 	plan.Preconditions = maintenanceStillExists(id, m.Name)

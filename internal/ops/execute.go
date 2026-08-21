@@ -141,6 +141,21 @@ func Apply(ctx context.Context, env *opspec.Env, plan *safety.Plan, opts ApplyOp
 	if err := CheckScope(env, op); err != nil {
 		return nil, err
 	}
+	// A plan is a file, and the process that created it can rewrite it. Its
+	// hash catches accidental corruption, not an author who recomputes it, so
+	// risk and scope are derived again here from the code rather than read
+	// back from the file. A plan that claims anything weaker than the registry
+	// says is refused instead of applied.
+	risk, scope, err := authoritativeRiskAndScope(op, plan)
+	if err != nil {
+		return nil, err
+	}
+	if plan.Risk != risk || plan.Scope != scope {
+		return nil, errs.Denied(
+			"plan %s claims to be a %s change needing %q, but %s is a %s change needing %q",
+			plan.ID, plan.Risk, plan.Scope, plan.Operation, risk, scope).
+			WithSuggestion("build the plan again rather than editing a stored one")
+	}
 	if err := CheckPlanScope(env, plan); err != nil {
 		return nil, err
 	}
@@ -172,6 +187,7 @@ func Apply(ctx context.Context, env *opspec.Env, plan *safety.Plan, opts ApplyOp
 	}
 
 	result, applyErr := env.Service.ApplyPlan(ctx, plan)
+	var auditWarning string
 	if env.Audit != nil {
 		entry := safety.AuditEntry{
 			Profile:   env.Profile,
@@ -189,13 +205,21 @@ func Apply(ctx context.Context, env *opspec.Env, plan *safety.Plan, opts ApplyOp
 			entry.Outcome = "failed"
 			entry.Error = applyErr.Error()
 		}
-		_ = env.Audit.Append(entry)
+		// A change that happened without a record of it having happened is
+		// worse than a change that failed: the next person to look has no way
+		// to tell. If the log cannot be written, say so where the caller will
+		// see it rather than swallowing it.
+		if auditErr := env.Audit.Append(entry); auditErr != nil {
+			auditWarning = "the change was applied but could not be written to the audit log: " + auditErr.Error()
+		}
 	}
 	// The plan is discarded either way. A write that failed mid-flight may
 	// still have reached Zabbix, so leaving it available to retry would invite
 	// applying the same change twice.
 	if env.Plans != nil {
-		_ = env.Plans.Discard(plan.ID)
+		if discardErr := env.Plans.Discard(plan.ID); discardErr != nil && auditWarning == "" {
+			auditWarning = "the plan file could not be removed after applying: " + discardErr.Error()
+		}
 	}
 	if applyErr != nil {
 		return nil, applyErr
@@ -209,11 +233,36 @@ func Apply(ctx context.Context, env *opspec.Env, plan *safety.Plan, opts ApplyOp
 	}}
 	res.Meta.Returned = 1
 	res.Meta.Profile = env.Profile
+	if auditWarning != "" {
+		res.Warnings = append(res.Warnings, auditWarning)
+	}
 	res.Table = &output.Table{
 		Headers: []string{"RESULT"},
 		Rows:    [][]string{{"applied: " + plan.Summary}},
 	}
 	return res, nil
+}
+
+// authoritativeRiskAndScope says what a plan's operation is actually allowed to
+// do, according to the registry rather than according to the stored plan.
+//
+// The raw escape hatch is the interesting case: every method it can reach
+// shares one registry entry, so the classification has to be recomputed from
+// the method name the plan carries.
+func authoritativeRiskAndScope(op *opspec.Operation, plan *safety.Plan) (safety.Risk, string, error) {
+	if plan.Operation != "api.call" {
+		return op.Risk, op.Scope, nil
+	}
+	method, _ := plan.Params["method"].(string)
+	class := safety.ClassifyMethod(method)
+	if !class.Allowed {
+		reason := class.Reason
+		if reason == "" {
+			reason = "it is not in the risk registry"
+		}
+		return "", "", errs.Denied("plan %s calls %q, which is refused: %s", plan.ID, method, reason)
+	}
+	return class.Risk, class.Scope, nil
 }
 
 // planOperationName maps a plan back to its registry entry. The raw API

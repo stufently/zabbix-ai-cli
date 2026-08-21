@@ -1,6 +1,7 @@
 package ops
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -156,5 +157,56 @@ func TestApproveCommandNamesTheTargetForDestructivePlans(t *testing.T) {
 	got := ApproveCommand(plan)
 	if !strings.Contains(got, plan.ID) || !strings.Contains(got, `--confirm "weekend window"`) {
 		t.Errorf("approve command = %q", got)
+	}
+}
+
+// A stored plan is a file its author can rewrite, hash and all. Apply must
+// therefore believe the registry over the file.
+func TestATamperedPlanIsRefusedRatherThanApplied(t *testing.T) {
+	env := &opspec.Env{
+		Profile: "prod",
+		Config:  config.Profile{Scopes: []string{config.ScopeMaintenance}},
+	}
+
+	// A destructive maintenance delete, rewritten to look like an ordinary
+	// write so that it would skip the confirmation.
+	plan, err := safety.NewPlan("maintenance.delete", "prod", safety.RiskWrite, safety.ScopeMaintenance)
+	if err != nil {
+		t.Fatalf("NewPlan: %v", err)
+	}
+	plan.Params = map[string]any{"maintenanceids": []any{"6"}}
+	plan.Summary = "Delete maintenance window"
+	if err := plan.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	_, err = Apply(context.Background(), env, plan, ApplyOptions{Approval: safety.ApprovalTerminal})
+	if err == nil {
+		t.Fatal("a plan understating its own risk was applied")
+	}
+	if !strings.Contains(err.Error(), "claims to be") {
+		t.Errorf("error = %q, want it to name the disagreement", err)
+	}
+}
+
+// The escape hatch shares one registry entry across every method, so its risk
+// has to be recomputed from the method the plan carries.
+func TestARawPlanIsClassifiedFromItsMethodNotItsFile(t *testing.T) {
+	env := &opspec.Env{
+		Profile: "prod",
+		Config:  config.Profile{Scopes: []string{config.ScopeMaintenance}},
+	}
+	plan, err := safety.NewPlan("api.call", "prod", safety.RiskWrite, safety.ScopeMaintenance)
+	if err != nil {
+		t.Fatalf("NewPlan: %v", err)
+	}
+	// maintenance.delete is destructive, not an ordinary write.
+	plan.Params = map[string]any{"method": "maintenance.delete", "params": []any{"6"}}
+	if err := plan.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+
+	if _, err := Apply(context.Background(), env, plan, ApplyOptions{Approval: safety.ApprovalTerminal}); err == nil {
+		t.Fatal("a raw plan understating its own risk was applied")
 	}
 }

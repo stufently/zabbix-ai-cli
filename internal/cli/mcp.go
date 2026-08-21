@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/stufently/zabbix-ai-cli/internal/mcp"
@@ -41,6 +42,12 @@ func mcpCommand(g *globals) *cobra.Command {
 				return mcp.ServeStdio(cmd.Context(), server)
 			}
 			fmt.Fprintf(g.stderr, "mcp: profile %s\n", g.profile)
+			// A flag value is visible to every process on the machine through
+			// the process list, and lands in shell history besides. The
+			// environment is the safer place for a shared secret, so it wins.
+			if env := os.Getenv("ZABBIX_AI_CLI_MCP_TOKEN"); env != "" {
+				bearer = env
+			}
 			return mcp.ServeHTTP(cmd.Context(), server, mcp.HTTPOptions{
 				Addr:             httpAddr,
 				BearerToken:      bearer,
@@ -52,7 +59,7 @@ func mcpCommand(g *globals) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&httpAddr, "http", "", "serve streamable HTTP on this address instead of stdio")
 	cmd.Flags().StringVar(&bearer, "bearer-token", "",
-		"require this bearer token from MCP clients; unrelated to the Zabbix token")
+		"require this bearer token from MCP clients; prefer ZABBIX_AI_CLI_MCP_TOKEN, which is not visible in the process list")
 	cmd.Flags().BoolVar(&readOnly, "read-only", false,
 		"withhold the planning tool, so a client cannot even describe a change")
 	cmd.Flags().BoolVar(&allowRemote, "allow-remote", false,

@@ -170,10 +170,25 @@ func TestClassifyMethod(t *testing.T) {
 		{"maintenance.delete", RiskDestructive, true},
 		{"event.acknowledge", RiskWrite, true},
 		{"hostinterface.update", RiskWrite, true},
-		{"httptest.update", RiskWrite, true},
+		{"host.update", RiskWrite, true},
 
 		// Refused outright, whatever the profile grants.
 		{"script.execute", "", false},
+
+		// Denying script.execute is pointless if a script can be created and
+		// an action told to run it, or an SSH item told to collect it.
+		{"script.create", "", false},
+		{"action.create", "", false},
+		{"item.create", "", false},
+		{"itemprototype.update", "", false},
+		{"mediatype.update", "", false},
+		{"connector.create", "", false},
+		{"httptest.update", "", false},
+		{"proxy.update", "", false},
+		// Reading them stays available.
+		{"script.get", RiskRead, true},
+		{"item.get", RiskRead, true},
+		{"action.get", RiskRead, true},
 		{"task.create", "", false},
 		{"user.login", "", false},
 		{"token.generate", "", false},

@@ -53,7 +53,11 @@ func ServeHTTP(ctx context.Context, server *sdk.Server, opts HTTPOptions) error 
 	}
 	loopback := isLoopback(host)
 	if !loopback && !opts.AllowNonLoopback {
-		return errs.Usage("refusing to listen on %s, which is not a loopback address", opts.Addr).
+		what := opts.Addr
+		if host == "" {
+			what = opts.Addr + " (an empty host means every interface, not localhost)"
+		}
+		return errs.Usage("refusing to listen on %s, which is not a loopback address", what).
 			WithSuggestion("bind 127.0.0.1, or pass --allow-remote together with --bearer-token if you really mean to expose it")
 	}
 	if !loopback && opts.BearerToken == "" {
@@ -116,12 +120,29 @@ func ServeHTTP(ctx context.Context, server *sdk.Server, opts HTTPOptions) error 
 	return nil
 }
 
+// isLoopback reports whether a listen host reaches only this machine.
+//
+// An empty host is NOT loopback: net/http reads ":8000" as every interface, so
+// treating it as local would hand out an unauthenticated port on a routable
+// address. A name is loopback only when every address it resolves to is, so a
+// "localhost" pointed elsewhere in /etc/hosts cannot smuggle past the check.
 func isLoopback(host string) bool {
-	if host == "" || host == "localhost" {
-		return true
+	if host == "" {
+		return false
 	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	addrs, err := net.LookupIP(host)
+	if err != nil || len(addrs) == 0 {
+		return false
+	}
+	for _, ip := range addrs {
+		if !ip.IsLoopback() {
+			return false
+		}
+	}
+	return true
 }
 
 // requireBearer authenticates a client with a constant-time comparison, so the

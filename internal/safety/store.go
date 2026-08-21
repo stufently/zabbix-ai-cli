@@ -77,6 +77,14 @@ func (s *Store) Load(id string) (*Plan, error) {
 	}
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
+		// A claimed plan still exists on disk under another name. Saying it
+		// never existed would invite a second attempt at a change that may be
+		// in flight, so the claim is reported for what it is.
+		if _, statErr := os.Stat(path + claimedSuffix); statErr == nil {
+			return nil, errs.New(errs.CodePlanNotFound, errs.ExitNotFound,
+				"plan %s is being applied, or has already been applied", id).
+				WithSuggestion("check the audit log before planning the same change again")
+		}
 		return nil, errs.New(errs.CodePlanNotFound, errs.ExitNotFound, "no plan %s exists", id).
 			WithSuggestion("run 'zabbix-ai-cli plans list' to see outstanding plans; they expire after %s", DefaultTTL)
 	}
@@ -100,7 +108,19 @@ func (s *Store) List() ([]*Plan, error) {
 	now := time.Now()
 	var plans []*Plan
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if e.IsDir() {
+			continue
+		}
+		// A process killed between Claim and Discard leaves its claim behind.
+		// Nothing else would ever remove it, and it holds the plan's
+		// parameters, so it is pruned here once it is far past any use.
+		if strings.HasSuffix(e.Name(), claimedSuffix) {
+			if info, err := e.Info(); err == nil && now.Sub(info.ModTime()) > 2*DefaultTTL {
+				_ = os.Remove(filepath.Join(s.dir, e.Name()))
+			}
+			continue
+		}
+		if !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".json")

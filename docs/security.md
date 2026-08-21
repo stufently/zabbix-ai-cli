@@ -37,11 +37,42 @@ moves data that carries credentials:
 
 `script.execute`, `task.create`, `user.login`, `token.*`, `configuration.export`,
 `configuration.import`, `authentication.update`, `settings.update`,
-`history.clear`, and user, group, role and directory administration.
+`history.clear`, `usermacro.get`, and user, group, role and directory
+administration.
 
-`configuration.export` deserves a note: it reads, so a classifier that keys on the
-verb would wave it through. Its output embeds macros, which is where Zabbix
-installations keep passwords.
+Two of those deserve a note, because both read and a classifier that keys on the
+verb would wave them through. `configuration.export` embeds macros in its output,
+and `usermacro.get` returns them directly — macros are where Zabbix installations
+keep database passwords and API keys, and this tool's output goes into a model's
+context.
+
+Writes are also refused, whatever scope a profile holds, for the objects whose
+configuration is code or invokes code: `script`, `action`, `mediatype`, `item`,
+`itemprototype`, `discoveryrule`, `hostprototype`, `httptest`, `webscenario`,
+`connector`, `autoregistration`, `proxy` and `proxygroup`. Refusing
+`script.execute` while allowing `script.create` plus `action.create` would only
+lengthen the road to running a command on a monitored host, not close it. Reading
+any of them stays available.
+
+## What the approval gate does and does not protect
+
+The gate is drawn against the model, not against the operating system. Nothing
+an MCP client can send applies a change: there is no `apply` parameter, and a
+test fails the build if one appears. What the model gets back is a plan and the
+command a person would run.
+
+That boundary is the OS user. An agent that also has a shell as the same user can
+run `--apply` itself — and could equally read the token and call Zabbix directly,
+so the plan file is not what is holding it back. For the same reason a stored
+plan's hash is a check against corruption and stale reuse, not authentication:
+whoever can rewrite the file can recompute the hash. That is why risk and scope
+are derived again from the registry when a plan is applied, and a plan claiming
+anything weaker than the code says is refused.
+
+If an agent session on your machine should not be able to change Zabbix at all,
+give it a profile without write scopes, or run the MCP server as a different user
+from the one holding a write-capable token. Separating those users is the only
+arrangement in which `--apply` is genuinely out of reach.
 
 ## Layers
 

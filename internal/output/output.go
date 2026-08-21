@@ -218,7 +218,13 @@ func Sanitise(s string) string {
 // fetch limit+1 rows so that truncation is detected without a second count
 // query.
 func Bound[T any](items []T, limit int) (kept []T, truncated bool) {
-	if limit <= 0 || len(items) <= limit {
+	// A negative limit is a caller mistake, not a request for everything: it
+	// used to fall into the "no limit" branch and hand back the whole result
+	// set. Zero still means "the operation's own default applies".
+	if limit < 0 {
+		limit = 0
+	}
+	if limit == 0 || len(items) <= limit {
 		return items, false
 	}
 	return items[:limit], true

@@ -30,9 +30,10 @@ Durations are written the way people say them: `30m`, `2h`, `7d`, `2w`.
 matched, and stops. A pattern that matches nothing is an error, not a quietly
 smaller window — check the host count in the plan before approving.
 
-To apply it yourself from a terminal, add `--apply`. Over MCP you cannot apply
-anything: relay the `approve_command` from the plan verbatim and ask the operator
-to run it.
+**You do not apply it.** `--apply` exists for a person working in their own
+terminal; reaching for it from an agent session — over MCP or through a shell —
+defeats the point of the plan. Relay the `approve_command` from the plan
+verbatim and let the operator run it.
 
 ## Data collection
 

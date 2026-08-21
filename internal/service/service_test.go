@@ -484,3 +484,28 @@ func TestUnixtimeZeroIsNotRenderedAsTheEpoch(t *testing.T) {
 		t.Errorf("a zero timestamp must not read as a real date: %q", got)
 	}
 }
+
+// The write path matters more than the read path here: this list decides
+// which hosts stop alerting.
+func TestMaintenanceCreatePrefersAnExactGroupName(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	srv.Reply("hostgroup.get", []any{
+		map[string]any{"groupid": "1", "name": "Linux servers"},
+		map[string]any{"groupid": "2", "name": "Linux"},
+		map[string]any{"groupid": "3", "name": "Embedded Linux"},
+	})
+	svc := newService(t, srv)
+
+	plan, err := svc.PlanMaintenanceCreate(context.Background(), "test", service.MaintenanceCreateRequest{
+		Name:     "patching",
+		Groups:   []string{"Linux"},
+		Duration: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("PlanMaintenanceCreate: %v", err)
+	}
+	groups, _ := plan.Params["groups"].([]map[string]any)
+	if len(groups) != 1 || groups[0]["groupid"] != "2" {
+		t.Errorf("groups = %v, want only the exactly named group", plan.Params["groups"])
+	}
+}

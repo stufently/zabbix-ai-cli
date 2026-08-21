@@ -85,37 +85,49 @@ var writeObjects = map[string]string{
 	"host":             ScopeConfiguration,
 	"hostgroup":        ScopeConfiguration,
 	"hostinterface":    ScopeConfiguration,
-	"item":             ScopeConfiguration,
-	"itemprototype":    ScopeConfiguration,
 	"trigger":          ScopeConfiguration,
 	"triggerprototype": ScopeConfiguration,
 	"template":         ScopeConfiguration,
 	"templategroup":    ScopeConfiguration,
-	"httptest":         ScopeConfiguration,
-	"webscenario":      ScopeConfiguration,
-	"discoveryrule":    ScopeConfiguration,
 	"usermacro":        ScopeConfiguration,
 	"valuemap":         ScopeConfiguration,
 	"service":          ScopeConfiguration,
 	"sla":              ScopeConfiguration,
 	"dashboard":        ScopeConfiguration,
-	"action":           ScopeConfiguration,
 	"correlation":      ScopeConfiguration,
-	"proxy":            ScopeConfiguration,
-	"proxygroup":       ScopeConfiguration,
-	"hostprototype":    ScopeConfiguration,
 	"graph":            ScopeConfiguration,
 	"graphprototype":   ScopeConfiguration,
-	"mediatype":        ScopeConfiguration,
-	"script":           ScopeConfiguration,
 	"regexp":           ScopeConfiguration,
 	"iconmap":          ScopeConfiguration,
 	"image":            ScopeConfiguration,
 	"map":              ScopeConfiguration,
-	"connector":        ScopeConfiguration,
 	"report":           ScopeConfiguration,
-	"autoregistration": ScopeConfiguration,
 	"housekeeping":     ScopeConfiguration,
+}
+
+// executableObjects are objects whose configuration is code, or invokes code.
+//
+// Denying script.execute closes the short road to running a command on a
+// monitored host. These are the long ones: a script plus an action that runs
+// it, an item of type SSH, Telnet, script or browser, a script media type that
+// fires on every alert, a connector that streams the installation's data to an
+// endpoint of the author's choosing. Each is a legitimate part of Zabbix and
+// none of it belongs behind a generic escape hatch, so they are refused
+// outright rather than left behind a scope a profile might hold.
+var executableObjects = map[string]string{
+	"script":           "a script is a command definition, and an action can run it without script.execute ever being called",
+	"action":           "action operations run scripts and remote commands on hosts",
+	"mediatype":        "a script media type executes a program on the Zabbix server for every alert it sends",
+	"item":             "SSH, Telnet, script and browser items execute code every time they collect",
+	"itemprototype":    "item prototypes become items, and items can execute code",
+	"discoveryrule":    "a discovery rule creates items from its prototypes",
+	"hostprototype":    "host prototypes carry the items discovery creates",
+	"httptest":         "a web scenario makes the Zabbix server issue requests of the author's choosing",
+	"webscenario":      "a web scenario makes the Zabbix server issue requests of the author's choosing",
+	"connector":        "a connector streams monitoring data to an external endpoint",
+	"autoregistration": "autoregistration decides what happens to every new host that appears",
+	"proxy":            "a proxy collects for the hosts assigned to it, and its address decides where they report",
+	"proxygroup":       "proxy groups decide which proxy collects for which hosts",
 }
 
 var writeActions = map[string]bool{
@@ -159,6 +171,9 @@ func ClassifyMethod(method string) Classification {
 	if !ok || object == "" || action == "" {
 		return Classification{Allowed: false,
 			Reason: "a Zabbix API method looks like object.action, for example host.get"}
+	}
+	if reason, executable := executableObjects[object]; executable && action != "get" {
+		return Classification{Allowed: false, Reason: reason}
 	}
 	switch {
 	case action == "get":
