@@ -67,6 +67,18 @@ type Operation struct {
 	// Plan describes a change without making it. Write operations set this
 	// instead of Run; execution goes through the approval path.
 	Plan func(ctx context.Context, env *Env, args *Args) (*safety.Plan, error)
+	// IsWrite decides per invocation whether this call changes anything. Only
+	// the raw API escape hatch needs it, because whether it writes depends on
+	// the method it was handed.
+	IsWrite func(args *Args) bool
+}
+
+// Writes reports whether an invocation with these arguments changes anything.
+func (o *Operation) Writes(args *Args) bool {
+	if o.IsWrite != nil {
+		return o.IsWrite(args)
+	}
+	return o.Plan != nil
 }
 
 // ReadOnly reports whether the operation can change anything.

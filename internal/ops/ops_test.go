@@ -1,0 +1,160 @@
+package ops
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stufently/zabbix-ai-cli/internal/config"
+	"github.com/stufently/zabbix-ai-cli/internal/opspec"
+	"github.com/stufently/zabbix-ai-cli/internal/safety"
+)
+
+func TestEveryOperationIsWellFormed(t *testing.T) {
+	seenName := map[string]bool{}
+	seenCLI := map[string]bool{}
+	seenTool := map[string]bool{}
+
+	for _, op := range All() {
+		if op.Name == "" || len(op.CLI) == 0 {
+			t.Errorf("operation %+v has no name or command path", op)
+			continue
+		}
+		if seenName[op.Name] {
+			t.Errorf("duplicate operation name %q", op.Name)
+		}
+		seenName[op.Name] = true
+
+		if seenCLI[op.CommandPath()] {
+			t.Errorf("duplicate command path %q", op.CommandPath())
+		}
+		seenCLI[op.CommandPath()] = true
+
+		if op.MCPTool != "" {
+			if seenTool[op.MCPTool] {
+				t.Errorf("duplicate MCP tool name %q", op.MCPTool)
+			}
+			seenTool[op.MCPTool] = true
+			if !strings.HasPrefix(op.MCPTool, "zabbix_") {
+				t.Errorf("%s: MCP tool %q must be namespaced", op.Name, op.MCPTool)
+			}
+		}
+		if op.Summary == "" {
+			t.Errorf("%s has no summary; it becomes the tool description", op.Name)
+		}
+		if op.Run == nil && op.Plan == nil {
+			t.Errorf("%s does nothing", op.Name)
+		}
+		if op.Scope == "" {
+			t.Errorf("%s declares no scope", op.Name)
+		}
+		if err := config.ValidateScopes([]string{op.Scope}); err != nil {
+			t.Errorf("%s declares an unknown scope %q", op.Name, op.Scope)
+		}
+		for _, p := range op.Params {
+			if p.Description == "" {
+				t.Errorf("%s: parameter %q has no description", op.Name, p.Name)
+			}
+			if strings.ToLower(p.Name) != p.Name {
+				t.Errorf("%s: parameter %q must be lower case", op.Name, p.Name)
+			}
+		}
+	}
+}
+
+func TestReadOperationsCannotWrite(t *testing.T) {
+	for _, op := range All() {
+		if op.Risk == safety.RiskRead && op.Plan != nil && op.IsWrite == nil {
+			t.Errorf("%s is classed as a read but has a plan function and no per-call rule", op.Name)
+		}
+		if op.Risk != safety.RiskRead && op.Plan == nil {
+			t.Errorf("%s is classed as %q but cannot produce a plan", op.Name, op.Risk)
+		}
+	}
+}
+
+func TestWriteOperationsRequireANonReadScope(t *testing.T) {
+	for _, op := range Writable() {
+		if op.Name == "api.call" {
+			// The escape hatch takes its scope from the method it is handed.
+			continue
+		}
+		if op.Scope == safety.ScopeRead {
+			t.Errorf("%s writes but only needs the read scope", op.Name)
+		}
+	}
+}
+
+func TestSchemasAreGeneratedForEveryExposedTool(t *testing.T) {
+	for _, op := range All() {
+		if op.MCPTool == "" {
+			continue
+		}
+		schema := op.InputSchema()
+		if schema["type"] != "object" {
+			t.Errorf("%s: schema type = %v", op.Name, schema["type"])
+		}
+		if _, ok := schema["properties"]; !ok {
+			t.Errorf("%s: schema has no properties", op.Name)
+		}
+	}
+}
+
+func TestScopeIsEnforced(t *testing.T) {
+	readOnly := &opspec.Env{Profile: "prod", Config: config.Profile{}}
+	granted := &opspec.Env{Profile: "prod", Config: config.Profile{Scopes: []string{config.ScopeMaintenance}}}
+
+	create, ok := Lookup("maintenance.create")
+	if !ok {
+		t.Fatal("maintenance.create is missing from the registry")
+	}
+	if err := CheckScope(readOnly, create); err == nil {
+		t.Error("a read-only profile must not be able to plan a maintenance window")
+	}
+	if err := CheckScope(granted, create); err != nil {
+		t.Errorf("a profile with the maintenance scope must be allowed: %v", err)
+	}
+
+	list, _ := Lookup("problems.list")
+	if err := CheckScope(readOnly, list); err != nil {
+		t.Errorf("reads must never need a scope: %v", err)
+	}
+}
+
+func TestWritableNamesCoverEveryPlanOperation(t *testing.T) {
+	names := WritableNames()
+	if len(names) == 0 {
+		t.Fatal("no writable operations are registered")
+	}
+	for _, name := range names {
+		op, ok := Lookup(name)
+		if !ok || op.Plan == nil {
+			t.Errorf("WritableNames lists %q, which cannot be planned", name)
+		}
+	}
+}
+
+func TestLookupCommandAcceptsBothForms(t *testing.T) {
+	byPath, ok := LookupCommand("host investigate")
+	if !ok {
+		t.Fatal("lookup by command path failed")
+	}
+	byName, ok := LookupCommand("host.investigate")
+	if !ok {
+		t.Fatal("lookup by operation name failed")
+	}
+	if byPath.Name != byName.Name {
+		t.Errorf("the two forms resolved differently: %s and %s", byPath.Name, byName.Name)
+	}
+}
+
+func TestApproveCommandNamesTheTargetForDestructivePlans(t *testing.T) {
+	plan, err := safety.NewPlan("maintenance.delete", "prod", safety.RiskDestructive, safety.ScopeMaintenance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.RequiresConfirmName = "weekend window"
+	got := ApproveCommand(plan)
+	if !strings.Contains(got, plan.ID) || !strings.Contains(got, `--confirm "weekend window"`) {
+		t.Errorf("approve command = %q", got)
+	}
+}

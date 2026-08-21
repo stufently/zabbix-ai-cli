@@ -126,11 +126,7 @@ func (s *Service) resolveItems(ctx context.Context, hostID string, q ItemQuery) 
 		"sortfield": "name",
 		"limit":     limit + 1,
 	}
-	if q.Search != "" {
-		params["search"] = map[string]any{"name": q.Search, "key_": q.Search}
-		params["searchByAny"] = true
-		params["searchWildcardsEnabled"] = true
-	}
+	applySearch(params, q.Search, "name", "key_")
 	if q.EnabledOnly {
 		params["filter"] = map[string]any{"status": "0"}
 	}

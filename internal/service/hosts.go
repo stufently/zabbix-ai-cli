@@ -177,12 +177,10 @@ type HostQuery struct {
 // short by the limit.
 func (s *Service) ListHosts(ctx context.Context, q HostQuery) ([]Host, bool, error) {
 	params := map[string]any{
-		"output":        hostOutputFields,
-		"sortfield":     "name",
-		"sortorder":     "ASC",
-		"searchByAny":   true,
-		"excludeSearch": false,
-		"limit":         q.Limit + 1,
+		"output":    hostOutputFields,
+		"sortfield": "name",
+		"sortorder": "ASC",
+		"limit":     q.Limit + 1,
 		"selectInterfaces": []string{
 			"interfaceid", "ip", "dns", "port", "type", "main", "useip", "available", "error",
 		},
@@ -194,14 +192,11 @@ func (s *Service) ListHosts(ctx context.Context, q HostQuery) ([]Host, bool, err
 		params["selectTags"] = "extend"
 		params["selectParentTemplates"] = []string{"templateid", "name"}
 	}
-	if q.Search != "" {
-		// A single call with searchByAny covers both the technical and the
-		// visible name. Substring matching is deliberate: a third of the calls
-		// against the tool this replaces returned nothing because the agent
-		// had to guess an exact name.
-		params["search"] = map[string]any{"host": q.Search, "name": q.Search}
-		params["searchWildcardsEnabled"] = true
-	}
+	// A single call with searchByAny covers both the technical and the visible
+	// name. Substring matching is deliberate: a third of the calls against the
+	// tool this replaces returned nothing because the agent had to guess an
+	// exact name.
+	applySearch(params, q.Search, "host", "name")
 	if q.Group != "" {
 		gids, err := s.hostGroupIDs(ctx, q.Group)
 		if err != nil {
@@ -258,11 +253,10 @@ func rankHosts(hosts []Host, search string) {
 
 func (s *Service) hostGroupIDs(ctx context.Context, name string) ([]string, error) {
 	params := map[string]any{
-		"output":                 []string{"groupid", "name"},
-		"search":                 map[string]any{"name": name},
-		"searchWildcardsEnabled": true,
-		"limit":                  50,
+		"output": []string{"groupid", "name"},
+		"limit":  50,
 	}
+	applySearch(params, name, "name")
 	var groups []struct {
 		GroupID string `json:"groupid"`
 		Name    string `json:"name"`

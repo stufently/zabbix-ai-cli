@@ -66,10 +66,7 @@ func (s *Service) ListTriggers(ctx context.Context, q TriggerQuery) ([]Trigger, 
 		}
 		params["hostids"] = []string{h.ID}
 	}
-	if q.Search != "" {
-		params["search"] = map[string]any{"description": q.Search}
-		params["searchWildcardsEnabled"] = true
-	}
+	applySearch(params, q.Search, "description")
 	if q.ProblemsOnly {
 		params["filter"] = map[string]any{"value": 1}
 	}

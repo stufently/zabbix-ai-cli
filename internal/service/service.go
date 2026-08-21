@@ -234,3 +234,25 @@ func SeverityValue(s string) (int, error) {
 	return 0, errs.Usage("unknown severity %q; use a number 0-5 or one of: %s",
 		s, strings.Join(severityNames, ", "))
 }
+
+// applySearch sets the search parameters for a pattern.
+//
+// Wildcards are enabled only when the pattern actually contains one. With
+// searchWildcardsEnabled set, Zabbix stops wrapping the value in implicit
+// wildcards and matches the string exactly, so leaving it permanently on turns
+// every substring search into an exact-match search that quietly returns
+// nothing.
+func applySearch(params map[string]any, pattern string, fields ...string) {
+	if pattern == "" {
+		return
+	}
+	search := make(map[string]any, len(fields))
+	for _, f := range fields {
+		search[f] = pattern
+	}
+	params["search"] = search
+	params["searchByAny"] = true
+	if strings.Contains(pattern, "*") {
+		params["searchWildcardsEnabled"] = true
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -66,4 +67,33 @@ func (a *AuditLog) Append(e AuditEntry) error {
 	defer func() { _ = f.Close() }()
 	_, err = f.Write(append(line, '\n'))
 	return err
+}
+
+// Find returns the most recent audit entry for a plan, if the plan was ever
+// executed. It lets a caller that only holds a plan identifier discover the
+// outcome, which matters over MCP: the plan file is removed once applied, so
+// its absence alone cannot distinguish "done" from "expired".
+func (a *AuditLog) Find(planID string) (*AuditEntry, error) {
+	data, err := os.ReadFile(a.path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var found *AuditEntry
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var e AuditEntry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			continue
+		}
+		if e.PlanID == planID {
+			entry := e
+			found = &entry
+		}
+	}
+	return found, nil
 }

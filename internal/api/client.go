@@ -88,6 +88,9 @@ func normaliseEndpoint(base string) string {
 	return strings.TrimRight(base, "/") + "/api_jsonrpc.php"
 }
 
+// unauthenticatedMethods must be called with no authorization header.
+var unauthenticatedMethods = map[string]bool{"apiinfo.version": true}
+
 type rpcRequest struct {
 	JSONRPC string `json:"jsonrpc"`
 	Method  string `json:"method"`
@@ -194,7 +197,11 @@ func (c *Client) attempt(ctx context.Context, method string, body []byte, result
 	}
 	req.Header.Set("Content-Type", "application/json-rpc")
 	req.Header.Set("User-Agent", c.userAgent)
-	if c.token != "" {
+	// Zabbix rejects apiinfo.version outright when an authorization header is
+	// present: "must be called without authorization header". It is the one
+	// method that has to go out unauthenticated, which also makes it a clean
+	// connectivity probe.
+	if c.token != "" && !unauthenticatedMethods[method] {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 

@@ -91,10 +91,7 @@ func (s *Service) ListMaintenance(ctx context.Context, q MaintenanceQuery) ([]Ma
 	if q.HostID != "" {
 		params["hostids"] = []string{q.HostID}
 	}
-	if q.Search != "" {
-		params["search"] = map[string]any{"name": q.Search}
-		params["searchWildcardsEnabled"] = true
-	}
+	applySearch(params, q.Search, "name")
 	var wire []wireMaintenance
 	if err := s.client.CallIdempotent(ctx, "maintenance.get", params, &wire); err != nil {
 		return nil, false, errs.FromAPI(err)
@@ -329,11 +326,10 @@ func (s *Service) expandGroupPatterns(ctx context.Context, patterns []string) ([
 			Name    string `json:"name"`
 		}
 		params := map[string]any{
-			"output":                 []string{"groupid", "name"},
-			"search":                 map[string]any{"name": p},
-			"searchWildcardsEnabled": true,
-			"limit":                  200,
+			"output": []string{"groupid", "name"},
+			"limit":  200,
 		}
+		applySearch(params, p, "name")
 		if err := s.client.CallIdempotent(ctx, "hostgroup.get", params, &groups); err != nil {
 			return nil, errs.FromAPI(err)
 		}

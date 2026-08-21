@@ -245,5 +245,8 @@ func apiCall() *opspec.Operation {
 			}
 			return env.Service.PlanRawCall(ctx, env.Profile, args.String("method"), params)
 		},
+		IsWrite: func(args *opspec.Args) bool {
+			return safety.ClassifyMethod(args.String("method")).Risk != safety.RiskRead
+		},
 	}
 }
