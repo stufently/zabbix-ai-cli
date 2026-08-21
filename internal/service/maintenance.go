@@ -403,9 +403,17 @@ func (s *Service) PlanMaintenanceExpire(ctx context.Context, profile, id string)
 	if err != nil {
 		return nil, errs.Internal("maintenance %s has an unreadable start time", id)
 	}
+	now := time.Now()
+	if since.After(now) {
+		// A window that has not begun cannot be ended. Moving its end to the
+		// earliest legal moment would leave a shorter window still scheduled,
+		// which looks like a cancellation and is not one.
+		return nil, errs.Usage("maintenance %q has not started yet; it begins at %s", m.Name, m.ActiveSince).
+			WithSuggestion("use 'zabbix-ai-cli maintenance delete %s' to cancel it", id)
+	}
 	// The window must keep a legal period, so it ends at the earliest moment
 	// Zabbix will accept rather than exactly now.
-	end := time.Now().Truncate(time.Minute)
+	end := now.Truncate(time.Minute)
 	if end.Sub(since) < minMaintenancePeriod {
 		end = since.Add(minMaintenancePeriod)
 	}

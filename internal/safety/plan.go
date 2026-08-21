@@ -104,10 +104,10 @@ func NewPlan(operation, profile string, risk Risk, scope string) (*Plan, error) 
 	}, nil
 }
 
-// Seal computes the plan's hash. It must be called once the parameters are
+// Seal computes the plan's fingerprint. It must be called once the plan is
 // final, and it is verified again before execution.
 func (p *Plan) Seal() error {
-	h, err := hashOf(p.Operation, p.Params)
+	h, err := p.fingerprint()
 	if err != nil {
 		return err
 	}
@@ -117,7 +117,7 @@ func (p *Plan) Seal() error {
 
 // Verify reports whether the plan is still internally consistent and unexpired.
 func (p *Plan) Verify(now time.Time) error {
-	h, err := hashOf(p.Operation, p.Params)
+	h, err := p.fingerprint()
 	if err != nil {
 		return err
 	}
@@ -171,14 +171,23 @@ func newID() (string, error) {
 	return "pl_" + hex.EncodeToString(b[:]), nil
 }
 
-// hashOf produces a stable fingerprint of an operation and its parameters.
-// json.Marshal sorts map keys, so the encoding does not depend on iteration
-// order.
-func hashOf(operation string, params map[string]any) (string, error) {
-	payload, err := json.Marshal(struct {
-		Operation string         `json:"operation"`
-		Params    map[string]any `json:"params"`
-	}{operation, params})
+// fingerprint hashes the whole plan apart from the hash itself.
+//
+// Covering only the parameters would leave the deadline, the risk class, the
+// confirmation requirement, the preconditions and the summary editable on
+// disk. The summary matters as much as the parameters: it is the text a person
+// reads before approving, and a plan that describes one change while carrying
+// another is worse than no plan at all.
+//
+// A plan is stored as a file owned by the same user the agent runs as, so
+// "nothing can edit it" is not an assumption worth resting on.
+//
+// json.Marshal sorts map keys and renders integral floats without a decimal
+// point, so the encoding survives the round trip through the plan file.
+func (p *Plan) fingerprint() (string, error) {
+	clone := *p
+	clone.Hash = ""
+	payload, err := json.Marshal(clone)
 	if err != nil {
 		return "", err
 	}

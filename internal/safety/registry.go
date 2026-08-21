@@ -59,6 +59,8 @@ var deniedMethods = map[string]string{
 	"mfa.create":            "authentication administration is outside this tool's remit",
 	"mfa.update":            "authentication administration is outside this tool's remit",
 	"mfa.delete":            "authentication administration is outside this tool's remit",
+	"history.clear":         "this permanently deletes collected measurements, and nothing in a diagnostic workflow needs to",
+	"usermacro.get":         "macro values are where installations keep database passwords and API keys, and this tool's output goes into a model's context",
 }
 
 // readOnlyObjects are the API objects whose .get method this program will call

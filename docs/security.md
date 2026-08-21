@@ -54,6 +54,17 @@ installations keep passwords.
 5. **The audit log.** Every applied change, with its plan, its parameters
    redacted of secrets, and how it was authorised.
 
+## Platform note
+
+File permissions are the enforcement mechanism for the configuration, the
+credentials file, stored plans and the audit log: directories `0700`, files
+`0600`, with owner and symlink checks before a credential is read.
+
+On Windows those mode bits are not enforced by the operating system, and Go's
+`os.Chmod` cannot express an ACL. On a shared Windows machine, protect
+`%AppData%\zabbix-ai-cli` through the filesystem ACL, or supply the token
+through the environment and keep nothing on disk.
+
 ## Reporting a vulnerability
 
 See [SECURITY.md](../SECURITY.md).

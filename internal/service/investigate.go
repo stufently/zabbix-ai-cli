@@ -173,9 +173,18 @@ func (s *Service) assessItems(ctx context.Context, inv *Investigation, items []w
 	const sampleSize = 40
 	sample := scheduled
 	if len(sample) > sampleSize {
-		sample = sample[:sampleSize]
+		// Items arrive sorted by name, so taking the first forty would only
+		// ever look at the start of the alphabet. Striding across the list
+		// keeps the sample spread over the whole host while staying
+		// deterministic.
+		stride := len(scheduled) / sampleSize
+		sample = make([]wireItem, 0, sampleSize)
+		for i := 0; i < len(scheduled) && len(sample) < sampleSize; i += stride {
+			sample = append(sample, scheduled[i])
+		}
 		inv.Warnings = append(inv.Warnings,
-			"no-data detection sampled the first 40 scheduled items of "+itoa(len(scheduled)))
+			"no-data detection sampled "+itoa(len(sample))+" of "+itoa(len(scheduled))+
+				" scheduled items, spread across the list")
 	}
 	if len(sample) == 0 {
 		return

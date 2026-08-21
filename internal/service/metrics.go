@@ -425,6 +425,10 @@ func FormatValue(raw, units, valueType string) string {
 	case "uptime":
 		return HumanDuration(time.Duration(f * float64(time.Second)))
 	case "unixtime":
+		// A zero here means the item never reported, not the start of 1970.
+		if f <= 0 {
+			return "never"
+		}
 		return rfc3339(time.Unix(int64(f), 0))
 	default:
 		return trimFloat(f) + " " + units

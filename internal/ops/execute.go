@@ -71,6 +71,11 @@ func CreatePlan(ctx context.Context, env *opspec.Env, op *opspec.Operation, args
 	if err != nil {
 		return nil, err
 	}
+	// The plan knows the scope it really needs, which for the escape hatch
+	// depends on the method it was handed rather than on the operation.
+	if err := CheckPlanScope(env, plan); err != nil {
+		return nil, err
+	}
 	if env.Plans != nil {
 		if err := env.Plans.Save(plan); err != nil {
 			return nil, err
@@ -136,6 +141,9 @@ func Apply(ctx context.Context, env *opspec.Env, plan *safety.Plan, opts ApplyOp
 	if err := CheckScope(env, op); err != nil {
 		return nil, err
 	}
+	if err := CheckPlanScope(env, plan); err != nil {
+		return nil, err
+	}
 	if plan.Profile != env.Profile {
 		return nil, errs.Denied("plan %s was made against profile %q but the active profile is %q",
 			plan.ID, plan.Profile, env.Profile).
@@ -153,6 +161,14 @@ func Apply(ctx context.Context, env *opspec.Env, plan *safety.Plan, opts ApplyOp
 		return nil, errs.ApprovalRequired(
 			"this change is destructive and needs the target named back exactly").
 			WithSuggestion("run: %s", ApproveCommand(plan))
+	}
+
+	// Take exclusive ownership before anything reaches Zabbix, so two
+	// concurrent approvals cannot both apply the same change.
+	if env.Plans != nil {
+		if err := env.Plans.Claim(plan.ID); err != nil {
+			return nil, err
+		}
 	}
 
 	result, applyErr := env.Service.ApplyPlan(ctx, plan)
@@ -175,11 +191,14 @@ func Apply(ctx context.Context, env *opspec.Env, plan *safety.Plan, opts ApplyOp
 		}
 		_ = env.Audit.Append(entry)
 	}
+	// The plan is discarded either way. A write that failed mid-flight may
+	// still have reached Zabbix, so leaving it available to retry would invite
+	// applying the same change twice.
+	if env.Plans != nil {
+		_ = env.Plans.Discard(plan.ID)
+	}
 	if applyErr != nil {
 		return nil, applyErr
-	}
-	if env.Plans != nil {
-		_ = env.Plans.Delete(plan.ID)
 	}
 
 	res := &output.Result{Data: AppliedResult{

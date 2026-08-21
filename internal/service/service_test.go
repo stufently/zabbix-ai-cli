@@ -2,11 +2,13 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stufently/zabbix-ai-cli/internal/api"
+	"github.com/stufently/zabbix-ai-cli/internal/errs"
 	"github.com/stufently/zabbix-ai-cli/internal/service"
 	"github.com/stufently/zabbix-ai-cli/internal/zbxtest"
 )
@@ -405,5 +407,80 @@ func TestAuthenticationFailureIsReportedWithoutTheToken(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "rejected the configured API token") {
 		t.Errorf("message = %q", err.Error())
+	}
+}
+
+func TestExpireRefusesAWindowThatHasNotStarted(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	future := time.Now().Add(24 * time.Hour).Unix()
+	srv.Reply("maintenance.get", []any{map[string]any{
+		"maintenanceid": "7", "name": "planned move", "maintenance_type": "0",
+		"active_since": itoa64(future), "active_till": itoa64(future + 7200),
+		"hosts": []any{}, "hostgroups": []any{}, "timeperiods": []any{},
+	}})
+	svc := newService(t, srv)
+
+	// Ending a window that has not begun would otherwise compute an end five
+	// minutes after a start that is still in the future, quietly turning the
+	// cancellation into a shorter future window.
+	_, err := svc.PlanMaintenanceExpire(context.Background(), "prod", "7")
+	if err == nil {
+		t.Fatal("expiring a window that has not started must be refused")
+	}
+	var e *errs.E
+	if !errors.As(err, &e) || !strings.Contains(e.Suggestion, "delete") {
+		t.Errorf("the error should point at deletion instead: %v", err)
+	}
+}
+
+func TestExpireEndsAnActiveWindow(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	since := time.Now().Add(-2 * time.Hour).Unix()
+	srv.Reply("maintenance.get", []any{map[string]any{
+		"maintenanceid": "7", "name": "in progress", "maintenance_type": "0",
+		"active_since": itoa64(since), "active_till": itoa64(since + 86400),
+		"hosts": []any{}, "hostgroups": []any{}, "timeperiods": []any{},
+	}})
+	svc := newService(t, srv)
+
+	plan, err := svc.PlanMaintenanceExpire(context.Background(), "prod", "7")
+	if err != nil {
+		t.Fatalf("PlanMaintenanceExpire: %v", err)
+	}
+	till, ok := plan.Params["active_till"].(int64)
+	if !ok {
+		t.Fatalf("active_till = %T", plan.Params["active_till"])
+	}
+	if till > time.Now().Unix()+60 {
+		t.Errorf("the window must end now, not in the future: %d", till)
+	}
+}
+
+func TestHostGroupLookupPrefersAnExactName(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	srv.Reply("hostgroup.get", []any{
+		map[string]any{"groupid": "1", "name": "Linux servers"},
+		map[string]any{"groupid": "2", "name": "Linux"},
+		map[string]any{"groupid": "3", "name": "Embedded Linux"},
+	})
+	srv.Reply("problem.get", []any{})
+	srv.Reply("trigger.get", []any{})
+	svc := newService(t, srv)
+
+	if _, _, err := svc.ListProblems(context.Background(),
+		service.ProblemQuery{Group: "Linux", Limit: 10}); err != nil {
+		t.Fatalf("ListProblems: %v", err)
+	}
+	// A group literally named "Linux" must not silently widen into every
+	// group whose name contains it.
+	ids, _ := srv.CallsTo("problem.get")[0].Params["groupids"].([]any)
+	if len(ids) != 1 || ids[0] != "2" {
+		t.Errorf("groupids = %v, want only the exactly named group", ids)
+	}
+}
+
+func TestUnixtimeZeroIsNotRenderedAsTheEpoch(t *testing.T) {
+	if got := service.FormatValue("0", "unixtime", "3"); got == "1970-01-01T00:00:00Z" {
+		t.Errorf("a zero timestamp must not read as a real date: %q", got)
 	}
 }

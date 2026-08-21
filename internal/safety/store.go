@@ -129,3 +129,45 @@ func (s *Store) Delete(id string) error {
 	}
 	return nil
 }
+
+// claimedSuffix marks a plan that an applier has taken ownership of.
+const claimedSuffix = ".claimed"
+
+// Claim takes exclusive ownership of a plan by renaming its file.
+//
+// Rename is atomic, so of two concurrent approvals exactly one succeeds and
+// the other is refused. Without it both could load the plan, pass every check
+// and reach Zabbix before either removed the file — applying the same change
+// twice.
+func (s *Store) Claim(id string) error {
+	path, err := s.path(id)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(path, path+claimedSuffix); err != nil {
+		if os.IsNotExist(err) {
+			return errs.New(errs.CodePlanNotFound, errs.ExitNotFound,
+				"plan %s is already being applied, or has been applied or rejected", id).
+				WithSuggestion("run the original command again to build a fresh plan")
+		}
+		return err
+	}
+	return nil
+}
+
+// Discard removes a claimed plan once its outcome is known.
+//
+// It is called whether the change succeeded or failed. A write that failed
+// mid-flight may still have reached Zabbix, so the plan is not put back for
+// another attempt: the caller is told to look at the current state and plan
+// again.
+func (s *Store) Discard(id string) error {
+	path, err := s.path(id)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path + claimedSuffix); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}

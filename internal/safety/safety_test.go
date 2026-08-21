@@ -230,3 +230,105 @@ func TestKnownMethodsExcludeDeniedOnes(t *testing.T) {
 		}
 	}
 }
+
+func TestVerifyCoversEveryFieldAnAttackerWouldEdit(t *testing.T) {
+	// A plan is a file on disk owned by the same user the agent runs as, so
+	// "the agent cannot edit it" is not an assumption worth making. Hashing
+	// only the parameters would leave the deadline, the risk class, the
+	// confirmation requirement and the preconditions freely editable — and
+	// the summary too, which is the text a person reads before approving.
+	base := func() *Plan {
+		p := newPlan(t)
+		p.RequiresConfirmName = "weekend window"
+		p.ImpactCount = 14
+		p.Preconditions = []Precondition{{Description: "still exists", Method: "maintenance.get"}}
+		if err := p.Seal(); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	for name, tamper := range map[string]func(*Plan){
+		"deadline extended":     func(p *Plan) { p.ExpiresAt = p.ExpiresAt.Add(time.Hour) },
+		"risk downgraded":       func(p *Plan) { p.Risk = RiskWrite },
+		"scope widened":         func(p *Plan) { p.Scope = ScopeRead },
+		"confirmation removed":  func(p *Plan) { p.RequiresConfirmName = "" },
+		"preconditions removed": func(p *Plan) { p.Preconditions = nil },
+		"profile switched":      func(p *Plan) { p.Profile = "staging" },
+		"summary rewritten":     func(p *Plan) { p.Summary = "something harmless" },
+		"operation switched":    func(p *Plan) { p.Operation = "maintenance.create" },
+		"parameters switched":   func(p *Plan) { p.Params["maintenanceids"] = []string{"9"} },
+		"impact understated":    func(p *Plan) { p.ImpactCount = 0 },
+		"resources rewritten":   func(p *Plan) { p.Resources = []Resource{{Kind: "host", ID: "1"}} },
+	} {
+		p := base()
+		tamper(p)
+		if err := p.Verify(time.Now()); err == nil {
+			t.Errorf("%s: tampering was not detected", name)
+		}
+	}
+}
+
+func TestVerifySurvivesAJSONRoundTrip(t *testing.T) {
+	// Numbers lose their Go type through JSON, so a fingerprint over the whole
+	// plan must still match once it has been written and read back.
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newPlan(t)
+	p.Params["active_since"] = int64(1787000000)
+	p.Params["period"] = 7200
+	p.Params["timeperiods"] = []map[string]any{{"timeperiod_type": 0, "period": int64(7200)}}
+	p.ImpactCount = 14
+	p.Resources = []Resource{{Kind: "host", ID: "10", Name: "web01"}}
+	if err := p.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.Verify(time.Now()); err != nil {
+		t.Fatalf("a plan must still verify after a round trip: %v", err)
+	}
+}
+
+func TestClaimLetsOnlyOneApplierThrough(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newPlan(t)
+	if err := store.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Claim(p.ID); err != nil {
+		t.Fatalf("the first claim must succeed: %v", err)
+	}
+	// Two concurrent approvals must not both reach Zabbix.
+	if err := store.Claim(p.ID); err == nil {
+		t.Fatal("a second claim must be refused")
+	}
+	if _, err := store.Load(p.ID); err == nil {
+		t.Error("a claimed plan must no longer be loadable")
+	}
+	if err := store.Discard(p.ID); err != nil {
+		t.Errorf("Discard: %v", err)
+	}
+}
+
+func TestSecretBearingReadsAreRefusedConsistently(t *testing.T) {
+	// configuration.export was denied because its output embeds macros. Macros
+	// read directly are the same secrets by another route, and this tool's
+	// output lands in a model's context either way.
+	for _, method := range []string{"configuration.export", "usermacro.get"} {
+		got := ClassifyMethod(method)
+		if got.Allowed {
+			t.Errorf("%s must be refused; it can carry credentials", method)
+		}
+	}
+}

@@ -7,6 +7,10 @@ Built for Claude Code, Codex and AI agents.
 task-shaped commands an agent can be trusted to run: bounded output, a stable
 JSON contract, and no change without a person's approval.
 
+**Requires Zabbix 6.4 or newer.** Bearer-token authentication arrived in 6.4 and
+is the only scheme implemented; earlier versions expect the token in the request
+body instead.
+
 It never contacts a language model. The AI decides, this program executes,
 Zabbix monitors.
 

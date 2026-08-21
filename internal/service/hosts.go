@@ -264,6 +264,15 @@ func (s *Service) hostGroupIDs(ctx context.Context, name string) ([]string, erro
 	if err := s.client.CallIdempotent(ctx, "hostgroup.get", params, &groups); err != nil {
 		return nil, errs.FromAPI(err)
 	}
+	// Substring matching is what makes patterns useful, but it also means a
+	// group named "Linux" would silently widen into "Linux staging" and
+	// "Embedded Linux". An exact name wins outright; only a pattern that
+	// matches nothing exactly is treated as a set.
+	for _, g := range groups {
+		if strings.EqualFold(g.Name, name) {
+			return []string{g.GroupID}, nil
+		}
+	}
 	ids := make([]string, 0, len(groups))
 	for _, g := range groups {
 		ids = append(ids, g.GroupID)

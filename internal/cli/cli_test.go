@@ -399,3 +399,42 @@ func TestTableOutputIsTheDefaultOnlyForTerminals(t *testing.T) {
 		t.Errorf("non-terminal output should be JSON, got:\n%s", r.stdout)
 	}
 }
+
+func TestRawApiCallCannotSidestepProfileScopes(t *testing.T) {
+	// The escape hatch declares itself a read, because whether it writes
+	// depends on the method it is handed. That must not let a read-only
+	// profile plan and apply a destructive method through it.
+	h := newHarness(t) // read-only profile
+	h.server.Reply("maintenance.delete", map[string]any{"maintenanceids": []any{"7"}})
+
+	r := h.run("api", "call", "maintenance.delete", "--params", `["7"]`, "--json")
+	if r.code != errs.ExitPermission {
+		t.Fatalf("exit = %d, want %d\n%s", r.code, errs.ExitPermission, r.stdout)
+	}
+	if body, ok := r.envelope(t)["error"].(map[string]any); ok && body["code"] != errs.CodeScope {
+		t.Errorf("error code = %v, want %v", body["code"], errs.CodeScope)
+	}
+
+	r = h.run("api", "call", "maintenance.delete", "--params", `["7"]`,
+		"--apply", "--confirm", "maintenance.delete", "--json")
+	if r.code == errs.ExitOK {
+		t.Fatal("a read-only profile applied a destructive method through the escape hatch")
+	}
+	if calls := h.server.CallsTo("maintenance.delete"); len(calls) != 0 {
+		t.Fatal("the destructive method reached Zabbix")
+	}
+}
+
+func TestRawApiCallWorksOnceTheScopeIsGranted(t *testing.T) {
+	h := newHarness(t, config.ScopeMaintenance)
+	h.server.Reply("maintenance.delete", map[string]any{"maintenanceids": []any{"7"}})
+
+	r := h.run("api", "call", "maintenance.delete", "--params", `["7"]`,
+		"--apply", "--confirm", "maintenance.delete", "--json")
+	if r.code != errs.ExitOK {
+		t.Fatalf("exit = %d\n%s", r.code, r.stdout)
+	}
+	if calls := h.server.CallsTo("maintenance.delete"); len(calls) != 1 {
+		t.Fatalf("maintenance.delete ran %d times", len(calls))
+	}
+}

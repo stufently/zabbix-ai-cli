@@ -78,14 +78,41 @@ func WritableNames() []string {
 // This is a second boundary behind the permissions of the Zabbix token: a
 // read-only profile cannot produce a plan even for an operation the token
 // would be allowed to perform.
+//
+// It is a fast path only. An operation whose risk depends on its arguments —
+// the raw API escape hatch — declares itself a read, so the binding check is
+// CheckPlanScope against the plan that was actually built.
 func CheckScope(env *opspec.Env, o *opspec.Operation) error {
 	if o.Risk == safety.RiskRead {
 		return nil
 	}
-	if env.HasScope(o.Scope) {
+	return requireScope(env, o.Scope, o.Name)
+}
+
+// CheckPlanScope reports whether a profile may carry out a specific plan.
+//
+// The plan carries the scope its classification produced, which for the escape
+// hatch is derived from the method rather than from the operation. Checking
+// only the operation would let a read-only profile plan and apply
+// maintenance.delete through `api call`.
+func CheckPlanScope(env *opspec.Env, plan *safety.Plan) error {
+	if plan.Risk == safety.RiskRead {
+		return nil
+	}
+	return requireScope(env, plan.Scope, plan.Operation)
+}
+
+func requireScope(env *opspec.Env, scope, what string) error {
+	if scope == "" || scope == safety.ScopeRead {
+		// A write that claims to need no scope is a classification bug, and
+		// the safe reading of a bug is that it is not permitted.
+		return errs.New(errs.CodeScope, errs.ExitPermission,
+			"%s changes something but declares no scope, so it is refused", what)
+	}
+	if env.HasScope(scope) {
 		return nil
 	}
 	return errs.New(errs.CodeScope, errs.ExitPermission,
-		"profile %q does not grant the %q scope, which %s requires", env.Profile, o.Scope, o.Name).
-		WithSuggestion("add it with 'zabbix-ai-cli profile scopes %s --add %s'", env.Profile, o.Scope)
+		"profile %q does not grant the %q scope, which %s requires", env.Profile, scope, what).
+		WithSuggestion("add it with 'zabbix-ai-cli profile scopes %s --add %s'", env.Profile, scope)
 }
