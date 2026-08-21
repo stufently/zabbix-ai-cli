@@ -108,6 +108,11 @@ Also found by review:
   truncating it.
 - A failure to write the audit log after an applied change was swallowed. It is
   now reported as a warning on the result.
+- An item whose history could not be read was reported as having no data. In
+  this tool "no data" reads as "your monitoring is broken", so a database error
+  looked like a dead agent. A failed read now carries `read_error`, the items
+  that did answer are still returned, and an investigation warns that its
+  no-data count understates.
 - `maintenance expire` on a window that started moments ago said alerting
   resumes now, when Zabbix will not end a window shorter than its minimum
   period. The summary says when it actually resumes.

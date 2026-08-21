@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/stufently/zabbix-ai-cli/internal/output"
@@ -191,7 +192,15 @@ func (s *Service) assessItems(ctx context.Context, inv *Investigation, items []w
 		return
 	}
 	values, err := s.latestForItems(ctx, sample)
-	if err != nil {
+	var partial errPartialHistory
+	switch {
+	case errors.As(err, &partial):
+		// A read that failed is not an item without data, and saying so would
+		// report healthy monitoring as broken.
+		inv.Partial = true
+		inv.Warnings = append(inv.Warnings,
+			"some item freshness could not be read, so no-data counts understate: "+partial.Error())
+	case err != nil:
 		inv.Partial = true
 		inv.Warnings = append(inv.Warnings, "item freshness could not be read: "+err.Error())
 		return

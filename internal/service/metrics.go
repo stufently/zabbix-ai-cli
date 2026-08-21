@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -97,6 +98,11 @@ type Value struct {
 	// Stale marks an item whose newest value is older than three collection
 	// intervals. It is only meaningful for items that collect on a schedule.
 	Stale bool `json:"stale"`
+	// ReadError records that this item's history could not be read. Without
+	// it a failed read is indistinguishable from an item that collected
+	// nothing — and in this tool "no data" reads as "your monitoring is
+	// broken", which is a very different report to hand someone.
+	ReadError string `json:"read_error,omitempty"`
 }
 
 // ItemQuery selects items on a host.
@@ -158,6 +164,13 @@ func (s *Service) LatestValues(ctx context.Context, q ItemQuery) (Host, []Value,
 		return host, nil, false, nil
 	}
 	values, err := s.latestForItems(ctx, items)
+	var partial errPartialHistory
+	if errors.As(err, &partial) {
+		// Some items answered and some did not. The values that arrived are
+		// still worth reporting; the ones that did not carry their own
+		// read_error.
+		return host, values, truncated, nil
+	}
 	if err != nil {
 		return Host{}, nil, false, err
 	}
@@ -180,6 +193,8 @@ func (s *Service) latestForItems(ctx context.Context, items []wireItem) ([]Value
 			run: func(ctx context.Context) error {
 				point, err := s.latestPoint(ctx, w)
 				if err != nil {
+					values[i].NoData = false
+					values[i].ReadError = err.Error()
 					return err
 				}
 				if point == nil {
@@ -190,10 +205,26 @@ func (s *Service) latestForItems(ctx context.Context, items []wireItem) ([]Value
 			},
 		})
 	}
-	if failures := runParallel(ctx, tasks); len(failures) == len(tasks) && len(tasks) > 0 {
+	failures := runParallel(ctx, tasks)
+	if len(failures) == len(tasks) && len(tasks) > 0 {
 		return nil, errs.New(errs.CodeAPI, errs.ExitAPI, "no item history could be read: %s", failures[0])
 	}
+	if len(failures) > 0 {
+		return values, errPartialHistory{count: len(failures), first: failures[0]}
+	}
 	return values, nil
+}
+
+// errPartialHistory reports that some items could not be read while others
+// could. It is not a failure of the whole call, so callers turn it into a
+// warning rather than an error.
+type errPartialHistory struct {
+	count int
+	first string
+}
+
+func (e errPartialHistory) Error() string {
+	return fmt.Sprintf("%d item(s) could not be read: %s", e.count, e.first)
 }
 
 type wireHistory struct {

@@ -509,3 +509,41 @@ func TestMaintenanceCreatePrefersAnExactGroupName(t *testing.T) {
 		t.Errorf("groups = %v, want only the exactly named group", plan.Params["groups"])
 	}
 }
+
+// "No data" in this tool reads as "your monitoring is broken". A read that
+// failed must not be reported as one.
+func TestAFailedHistoryReadIsNotReportedAsNoData(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	srv.Reply("host.get", []any{zbxtest.Host("10", "web01", nil)})
+	srv.Reply("item.get", []any{
+		zbxtest.Item("1", "10", "CPU idle", "system.cpu.util[,idle]", "0", map[string]any{"units": "%"}),
+		zbxtest.Item("2", "10", "Uptime", "system.uptime", "3", map[string]any{"units": "uptime"}),
+	})
+	srv.Handle("history.get", func(params map[string]any) (any, error) {
+		ids, _ := params["itemids"].([]any)
+		if len(ids) > 0 && ids[0] == "2" {
+			return nil, &zbxtest.APIError{Code: -32500, Message: "Internal error.", Data: "database is down"}
+		}
+		return []any{map[string]any{"itemid": "1", "clock": nowClock(), "value": "74.16", "ns": "0"}}, nil
+	})
+	svc := newService(t, srv)
+
+	_, values, _, err := svc.LatestValues(context.Background(), service.ItemQuery{Host: "web01", Limit: 10})
+	if err != nil {
+		t.Fatalf("a partial failure must not fail the whole call: %v", err)
+	}
+	byKey := map[string]service.Value{}
+	for _, v := range values {
+		byKey[v.Key] = v
+	}
+	failed := byKey["system.uptime"]
+	if failed.NoData {
+		t.Error("an item whose history could not be read was reported as having no data")
+	}
+	if failed.ReadError == "" {
+		t.Error("the failure was not reported at all")
+	}
+	if ok := byKey["system.cpu.util[,idle]"]; ok.Value == "" || ok.NoData {
+		t.Errorf("the item that did answer was lost: %+v", ok)
+	}
+}
