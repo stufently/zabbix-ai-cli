@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
   packages: write
+  # Publishing to the MCP registry authenticates with a short-lived OIDC token
+  # minted for this workflow, not with a stored secret.
+  id-token: write
 
 jobs:
   goreleaser:

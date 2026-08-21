@@ -1,11 +1,20 @@
-# Zabbix AI CLI
+# Zabbix AI CLI — Zabbix MCP server and CLI for AI agents
 
-AI-first CLI, MCP server and skills for Zabbix.
-Built for Claude Code, Codex and AI agents.
+[![CI](https://github.com/stufently/zabbix-ai-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/stufently/zabbix-ai-cli/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/stufently/zabbix-ai-cli.svg)](https://pkg.go.dev/github.com/stufently/zabbix-ai-cli)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Zabbix](https://img.shields.io/badge/Zabbix-6.4%2B-red.svg)](#compatibility)
+[![MCP](https://img.shields.io/badge/MCP-stdio%20%7C%20streamable%20HTTP-green.svg)](docs/mcp.md)
 
-`zabbix-ai-cli` is a single Go binary that turns Zabbix into a small set of
-task-shaped commands an agent can be trusted to run: bounded output, a stable
-JSON contract, and no change without a person's approval.
+**`zabbix-ai-cli` is a Zabbix MCP server and command-line client in one Go
+binary.** It gives Claude Code, Claude Desktop, Codex, Cursor and any other
+Model Context Protocol client task-shaped access to Zabbix — what is broken
+right now, why a host is silent, why an alert never arrived — with bounded
+output, a stable JSON contract, and no change to Zabbix without a person's
+approval.
+
+It is for the people who get paged: SRE and DevOps teams running Zabbix who want
+an agent to triage an incident without handing it the whole API.
 
 **Requires Zabbix 6.4 or newer.** Bearer-token authentication arrived in 6.4 and
 is the only scheme implemented; earlier versions expect the token in the request
@@ -97,7 +106,11 @@ beats a refusal that gets routed around.
 
 ## Install
 
-For a host-native binary, use Go 1.27 or newer:
+> Prebuilt archives and the `ghcr.io` image are published with each tagged
+> release. Until the first tag lands, build from source with either method
+> below.
+
+For a host-native binary, use Go 1.25 or newer:
 
 ```bash
 go install github.com/stufently/zabbix-ai-cli/cmd/zabbix-ai-cli@latest
@@ -137,17 +150,35 @@ zabbix-ai-cli profile scopes prod --add maintenance
 See [docs/authentication.md](docs/authentication.md) for the resolution order and
 the headless and container cases.
 
-## Claude Code
+## Add the Zabbix MCP server to your AI client
+
+The MCP client never sees the Zabbix token. It is resolved inside the server
+process from the profile you configured, so the credential never enters a
+model's context or a client's configuration file.
+
+### Claude Code
 
 ```bash
 claude mcp add zabbix -- zabbix-ai-cli mcp --profile prod
 zabbix-ai-cli skills install claude
 ```
 
-The MCP client never sees the Zabbix token: it is resolved inside the server
-process from the profile you configured.
+### Claude Desktop
 
-## Codex
+`claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "zabbix": {
+      "command": "zabbix-ai-cli",
+      "args": ["mcp", "--profile", "prod"]
+    }
+  }
+}
+```
+
+### Codex
 
 ```toml
 # ~/.codex/config.toml
@@ -158,6 +189,30 @@ args = ["mcp", "--profile", "prod"]
 
 ```bash
 zabbix-ai-cli skills install codex
+```
+
+### Cursor, Windsurf, VS Code and other MCP clients
+
+Any client that speaks stdio takes the same two fields — command
+`zabbix-ai-cli`, arguments `["mcp", "--profile", "prod"]`. For a client that
+wants HTTP instead:
+
+```bash
+zabbix-ai-cli mcp --http 127.0.0.1:8000
+```
+
+It refuses a routable address unless you pass `--allow-remote` together with a
+bearer token, because an unauthenticated MCP endpoint is an unauthenticated
+route into Zabbix. See [docs/mcp.md](docs/mcp.md).
+
+### Docker
+
+```bash
+docker run --rm -i \
+  -e ZABBIX_AI_CLI_URL=https://zabbix.example.com \
+  -e ZABBIX_AI_CLI_TOKEN_FILE=/run/secrets/zabbix \
+  -v /path/to/token:/run/secrets/zabbix:ro \
+  ghcr.io/stufently/zabbix-ai-cli:latest mcp
 ```
 
 ## MCP tools
@@ -223,6 +278,61 @@ Full details in [docs/json-output.md](docs/json-output.md).
 - [JSON output and exit codes](docs/json-output.md)
 - [Security model](docs/security.md)
 - [Architecture and design decisions](docs/architecture.md)
+
+## FAQ
+
+### What is a Zabbix MCP server?
+
+An MCP server is a small program that exposes a system to an AI client over the
+Model Context Protocol. A Zabbix MCP server lets Claude, Codex, Cursor and
+similar clients query Zabbix — problems, hosts, items, events, maintenance — as
+tools, instead of the model guessing at `curl` calls against the JSON-RPC API.
+
+### Can an AI agent change my Zabbix through this?
+
+Not on its own. Read operations run immediately. Every write produces a plan and
+stops. Applying that plan is a command a person runs in their own terminal:
+`zabbix-ai-cli approve <plan-id>`. There is no MCP parameter that applies
+anything, and a test fails the build if one is ever added.
+
+### Does it send my monitoring data to an AI provider?
+
+No. This program never contacts a language model. It talks to Zabbix and prints
+JSON. Whatever your MCP client does with that output is between you and your
+client.
+
+### Which Zabbix versions are supported?
+
+Zabbix 6.4 and newer, because bearer-token authentication arrived in 6.4.
+Developed and tested against Zabbix 7.4.
+
+### Do I need Go installed?
+
+No. `make build` compiles inside Docker and needs nothing on the host but
+Docker itself. `go install` is there for a host-native binary, and each tagged
+release publishes archives for Linux, macOS and Windows with checksums, along with a
+container image on `ghcr.io`.
+
+### How is this different from an MCP server that wraps the Zabbix API?
+
+A thin wrapper hands the agent the API's sharp edges: `problem.get` without
+hosts, `history.get` silently returning nothing for float items, `lastvalue`
+frozen at `"0"`. Those produce confident wrong answers rather than errors. This
+tool answers questions — "what is broken", "why did this alert not arrive" — and
+absorbs the traps behind them. It also ships fourteen tools rather than two
+hundred, because a large tool surface spends an agent's context before it does
+any work.
+
+### Can I still call the raw Zabbix API?
+
+Yes, through `api call`, under the same approval rules. Methods that hand out
+credentials or execute code are refused outright — including the long way round,
+such as creating a script and having an action run it.
+
+### Does it work without an AI client at all?
+
+Yes. It is a normal CLI with human-readable tables, JSON output and documented
+exit codes, so it is equally usable from a shell or a CI job.
 
 ## Compatibility
 

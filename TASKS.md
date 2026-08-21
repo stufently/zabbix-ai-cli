@@ -39,6 +39,19 @@ an older Go than the module targets. Pinned to v2.12.2 and the `go` directive
 lowered to 1.25.0, which is what the MCP SDK actually needs and what the README
 promises.
 
+## COMPLETED — 2026-08-21 — review of the Go 1.27 pass
+
+Eight findings, six real. Fixed with tests: `plans list` aborting when one plan
+was claimed under it, `zabbix_plan_status` stuck on "applying" behind a leftover
+claim, `alert why` making two serial `user.get` calls per candidate, unsanitised
+`read_error` reaching the terminal, numeric host names failing to resolve, and
+`--store` validated only after `--token-stdin` had eaten the token. Also moved
+the build cache out of the repository — it broke `make fmt-check` — and put the
+`go` directive back to its real lower bound. Not acted on: the nil-`http.Client`
+repair in `api.NewClient`, whose scenario `httpClient` cannot produce.
+
+MCP binary on this host updated to `51f1643` via `make install`.
+
 ## IN_PROGRESS
 
 Nothing.
