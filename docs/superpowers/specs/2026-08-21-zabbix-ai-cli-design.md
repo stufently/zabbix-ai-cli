@@ -177,11 +177,11 @@ Support: `version`, `login`, `logout`, `auth status`,
 `profile list|show|use|delete`, `plans list|show`, `approve`, `reject`,
 `schema`, `mcp`, `skills list|install`.
 
-MCP exposes twelve tools: `zabbix_problems`, `zabbix_hosts`,
+MCP exposes fourteen tools: `zabbix_problems`, `zabbix_hosts`,
 `zabbix_host_status`, `zabbix_host_investigate`, `zabbix_metrics_latest`,
 `zabbix_metrics_history`, `zabbix_alert_why`, `zabbix_resolve`,
-`zabbix_unreachable`, `zabbix_api_call` (read-only), `zabbix_plan_create`,
-`zabbix_plan_status`. Write operations do not get one tool each:
+`zabbix_unreachable`, `zabbix_maintenance_list`, `zabbix_problem`,
+`zabbix_api_call` (read-only), `zabbix_plan_create`, `zabbix_plan_status`. Write operations do not get one tool each:
 `zabbix_plan_create` takes an `operation` enum generated from the registry, so
 the tool surface does not grow as write operations are added.
 

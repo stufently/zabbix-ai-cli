@@ -11,6 +11,15 @@ linters:
     - misspell
     - unconvert
 
+  settings:
+    errcheck:
+      # A failed write to stdout or stderr cannot be usefully handled: there is
+      # nowhere left to report it.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
   exclusions:
     rules:
       # Tests assert on behaviour, not on the error of every helper call.

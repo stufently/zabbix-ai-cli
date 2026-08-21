@@ -152,7 +152,7 @@ zabbix-ai-cli skills install codex
 
 ## MCP tools
 
-Thirteen tools, not two hundred. A large tool surface costs an agent context
+Fourteen tools, not two hundred. A large tool surface costs an agent context
 before it has done anything, and most of it is never called.
 
 ```
