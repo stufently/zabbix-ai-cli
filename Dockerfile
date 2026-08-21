@@ -1,5 +1,5 @@
-# The MCP SDK requires Go 1.25.
-FROM golang:1.26-alpine AS build
+# Build with the latest stable Go release.
+FROM golang:1.27.0-alpine AS build
 
 ARG VERSION=dev
 WORKDIR /src

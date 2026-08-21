@@ -325,9 +325,13 @@ func metricsLatest() *opspec.Operation {
 			}
 			rows := make([][]string, 0, len(values))
 			silent := 0
+			readErrors := 0
 			for _, v := range values {
 				state := ""
 				switch {
+				case v.ReadError != "":
+					state = "read error"
+					readErrors++
 				case v.NoData:
 					state = "no data"
 					silent++
@@ -344,12 +348,17 @@ func metricsLatest() *opspec.Operation {
 			if silent > 0 {
 				res.Warn("%d item(s) are silent or stale", silent)
 			}
+			if readErrors > 0 {
+				res.Meta.Partial = true
+				res.Warn("history could not be read for %d item(s); see read_error", readErrors)
+			}
 			return res, nil
 		},
 	}
 }
 
 func metricsHistory() *opspec.Operation {
+	minItems, maxItems := opspec.IntRange(1, 10)
 	return &opspec.Operation{
 		Name:    "metrics.history",
 		CLI:     []string{"metrics", "history"},
@@ -362,7 +371,8 @@ func metricsHistory() *opspec.Operation {
 			{Name: "host", Type: opspec.TypeString, Required: true, Positional: true, Description: "host name or fragment"},
 			{Name: "search", Type: opspec.TypeString, Positional: true, Description: "item name or key fragment", Example: "cpu util"},
 			{Name: "last", Type: opspec.TypeDuration, Default: "1h", Description: "how far back to read", Example: "24h"},
-			{Name: "items", Type: opspec.TypeInt, Default: 5, Description: "maximum distinct items to read"},
+			{Name: "items", Type: opspec.TypeInt, Default: 5, Min: minItems, Max: maxItems,
+				Description: "maximum distinct items to read, 1 to 10"},
 			limitParam(200),
 		},
 		Run: func(ctx context.Context, env *opspec.Env, args *opspec.Args) (*output.Result, error) {
@@ -379,17 +389,15 @@ func metricsHistory() *opspec.Operation {
 			res := &output.Result{Data: map[string]any{"host": host.Name, "series": series}}
 			points := 0
 			truncated := false
+			readErrors := 0
 			rows := make([][]string, 0, len(series))
 			for _, s := range series {
 				points += len(s.Points)
 				truncated = truncated || s.Truncated
-				summary := "-"
-				if s.Summary != nil {
-					summary = fmt.Sprintf("min %s / avg %s / max %s",
-						service.FormatValue(trim(s.Summary.Min), s.Units, s.ValueType),
-						service.FormatValue(trim(s.Summary.Avg), s.Units, s.ValueType),
-						service.FormatValue(trim(s.Summary.Max), s.Units, s.ValueType))
+				if s.ReadError != "" {
+					readErrors++
 				}
+				summary := historySummary(s)
 				rows = append(rows, []string{s.Name, s.Key, itoa(len(s.Points)), summary})
 			}
 			res.Meta.Returned = points
@@ -398,6 +406,10 @@ func metricsHistory() *opspec.Operation {
 			if truncated {
 				res.Meta.TruncatedReason = output.ReasonRowLimit
 			}
+			if readErrors > 0 {
+				res.Meta.Partial = true
+				res.Warn("history could not be read for %d item(s); see read_error", readErrors)
+			}
 			res.Table = &output.Table{
 				Headers: []string{"ITEM", "KEY", "POINTS", "SUMMARY"},
 				Rows:    rows,
@@ -405,6 +417,19 @@ func metricsHistory() *opspec.Operation {
 			return res, nil
 		},
 	}
+}
+
+func historySummary(s service.Series) string {
+	if s.ReadError != "" {
+		return "read error: " + s.ReadError
+	}
+	if s.Summary == nil {
+		return "-"
+	}
+	return fmt.Sprintf("min %s / avg %s / max %s",
+		service.FormatValue(trim(s.Summary.Min), s.Units, s.ValueType),
+		service.FormatValue(trim(s.Summary.Avg), s.Units, s.ValueType),
+		service.FormatValue(trim(s.Summary.Max), s.Units, s.ValueType))
 }
 
 func alertWhy() *opspec.Operation {

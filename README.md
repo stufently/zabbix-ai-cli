@@ -97,15 +97,21 @@ beats a refusal that gets routed around.
 
 ## Install
 
+For a host-native binary, use Go 1.27 or newer:
+
 ```bash
 go install github.com/stufently/zabbix-ai-cli/cmd/zabbix-ai-cli@latest
+
+# Or build the current checkout.
+mkdir -p bin
+go build -trimpath -o bin/zabbix-ai-cli ./cmd/zabbix-ai-cli
 ```
 
-Or build from source (Go 1.25 or newer):
+The Make targets are container-first and do not require Go on the host:
 
 ```bash
-make build      # native binary in ./bin
-make docker     # container image for the MCP server
+make build      # Linux binary in ./bin, built inside Docker
+make docker     # Linux container image for the MCP server
 ```
 
 ## Configure

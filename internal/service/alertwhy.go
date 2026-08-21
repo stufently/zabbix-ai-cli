@@ -137,10 +137,18 @@ func (s *Service) ExplainAlert(ctx context.Context, eventID string) (*AlertExpla
 		exp.Findings = append(exp.Findings, "the event is suppressed: "+SuppressionSummary(exp.SuppressedBy))
 	}
 
-	attempts, err := s.deliveryAttempts(ctx, eventID)
-	if err != nil {
+	attempts, attemptsTruncated, err := s.deliveryAttempts(ctx, eventID)
+	attemptsRead := err == nil
+	if !attemptsRead {
 		exp.Partial = true
 		exp.Warnings = append(exp.Warnings, "delivery attempts could not be read: "+err.Error())
+	}
+	if attemptsTruncated {
+		exp.Partial = true
+		exp.Warnings = append(exp.Warnings, "delivery attempts were truncated at 100 newest records")
+	}
+	if attempts == nil {
+		attempts = []DeliveryAttempt{}
 	}
 	exp.Attempts = attempts
 
@@ -158,19 +166,29 @@ func (s *Service) ExplainAlert(ctx context.Context, eventID string) (*AlertExpla
 		exp.Findings = append(exp.Findings, fmt.Sprintf("Zabbix sent %d notification(s) for this event", sent))
 	case failed > 0:
 		exp.Findings = append(exp.Findings, fmt.Sprintf("%d of %d delivery attempts failed", failed, len(attempts)))
-	case len(attempts) == 0:
+	case attemptsRead && len(attempts) == 0:
 		exp.Findings = append(exp.Findings, "Zabbix recorded no delivery attempt for this event")
+	case attemptsRead && len(attempts) > 0:
+		exp.Findings = append(exp.Findings, fmt.Sprintf("Zabbix recorded %d queued or not-sent notification attempt(s)", len(attempts)))
 	}
 
 	// The configuration chain only needs inspecting when nothing was sent.
-	if len(attempts) == 0 {
+	if attemptsRead && len(attempts) == 0 {
 		if err := s.inspectNotificationConfig(ctx, exp); err != nil {
 			exp.Partial = true
 			exp.Warnings = append(exp.Warnings, err.Error())
+		} else {
+			exp.Partial = true
+			exp.Warnings = append(exp.Warnings,
+				"configuration fallback lists candidates only; action conditions, escalation steps, and media active periods are not evaluated at the event time")
 		}
 	}
 	if len(exp.Findings) == 0 {
-		exp.Findings = append(exp.Findings, "no obstacle to notification was found in the configuration")
+		if exp.Partial {
+			exp.Findings = append(exp.Findings, "notification diagnosis is incomplete")
+		} else {
+			exp.Findings = append(exp.Findings, "no obstacle to notification was found in the configuration")
+		}
 	}
 	return exp, nil
 }
@@ -224,7 +242,7 @@ func (e *wireEvent) summary() EventSummary {
 	return sum
 }
 
-func (s *Service) deliveryAttempts(ctx context.Context, eventID string) ([]DeliveryAttempt, error) {
+func (s *Service) deliveryAttempts(ctx context.Context, eventID string) ([]DeliveryAttempt, bool, error) {
 	var wire []struct {
 		AlertID     string `json:"alertid"`
 		MediaTypeID string `json:"mediatypeid"`
@@ -236,13 +254,16 @@ func (s *Service) deliveryAttempts(ctx context.Context, eventID string) ([]Deliv
 		AlertType   string `json:"alerttype"`
 	}
 	params := map[string]any{
-		"output":   []string{"alertid", "mediatypeid", "sendto", "status", "retries", "error", "clock", "alerttype"},
-		"eventids": []string{eventID},
-		"limit":    100,
+		"output":    []string{"alertid", "mediatypeid", "sendto", "status", "retries", "error", "clock", "alerttype"},
+		"eventids":  []string{eventID},
+		"sortfield": "clock",
+		"sortorder": "DESC",
+		"limit":     101,
 	}
 	if err := s.client.CallIdempotent(ctx, "alert.get", params, &wire); err != nil {
-		return nil, errs.FromAPI(err)
+		return nil, false, errs.FromAPI(err)
 	}
+	wire, truncated := output.Bound(wire, 100)
 	names, _ := s.mediaTypeNames(ctx)
 	attempts := make([]DeliveryAttempt, 0, len(wire))
 	for _, w := range wire {
@@ -261,7 +282,7 @@ func (s *Service) deliveryAttempts(ctx context.Context, eventID string) ([]Deliv
 		}
 		attempts = append(attempts, a)
 	}
-	return attempts, nil
+	return attempts, truncated, nil
 }
 
 func alertStatusName(v string) string {
@@ -336,22 +357,34 @@ type wireAction struct {
 	} `json:"operations"`
 }
 
-// inspectNotificationConfig walks the configuration that decides whether a
-// trigger event produces a message at all.
+type notificationCandidate struct {
+	MediaTypeID string
+	GroupIDs    []string
+	UserIDs     []string
+}
+
+// inspectNotificationConfig collects candidate notification configuration.
+// Matching action conditions and time-dependent rules requires server-side
+// evaluation that is not exposed by these API responses.
 func (s *Service) inspectNotificationConfig(ctx context.Context, exp *AlertExplanation) error {
 	var actions []wireAction
 	params := map[string]any{
 		"output":           []string{"actionid", "name", "status", "eventsource"},
 		"filter":           map[string]any{"eventsource": 0},
 		"selectOperations": "extend",
-		"limit":            50,
+		"limit":            51,
 	}
 	if err := s.client.CallIdempotent(ctx, "action.get", params, &actions); err != nil {
 		return errs.FromAPI(err)
 	}
+	actions, actionsTruncated := output.Bound(actions, 50)
+	if actionsTruncated {
+		exp.Partial = true
+		exp.Warnings = append(exp.Warnings, "trigger actions were truncated at 50 records")
+	}
 
 	enabled := 0
-	var groupIDs, userIDs []string
+	var candidates []notificationCandidate
 	for _, a := range actions {
 		check := ActionCheck{
 			ActionID:   a.ActionID,
@@ -362,11 +395,18 @@ func (s *Service) inspectNotificationConfig(ctx context.Context, exp *AlertExpla
 		if check.Enabled {
 			enabled++
 			for _, op := range a.Operations {
+				if op.OperationType != "0" {
+					continue
+				}
+				candidate := notificationCandidate{MediaTypeID: op.OpMessage.MediaTypeID}
 				for _, g := range op.OpMessageGrp {
-					groupIDs = appendUnique(groupIDs, g.UsrGrpID)
+					candidate.GroupIDs = appendUnique(candidate.GroupIDs, g.UsrGrpID)
 				}
 				for _, u := range op.OpMessageUsr {
-					userIDs = appendUnique(userIDs, u.UserID)
+					candidate.UserIDs = appendUnique(candidate.UserIDs, u.UserID)
+				}
+				if len(candidate.GroupIDs) > 0 || len(candidate.UserIDs) > 0 {
+					candidates = append(candidates, candidate)
 				}
 			}
 		}
@@ -375,7 +415,7 @@ func (s *Service) inspectNotificationConfig(ctx context.Context, exp *AlertExpla
 	switch {
 	case len(actions) == 0:
 		exp.Findings = append(exp.Findings, "no trigger action exists, so no notification can ever be sent")
-	case enabled == 0:
+	case enabled == 0 && !actionsTruncated:
 		exp.Findings = append(exp.Findings, "every trigger action is disabled")
 	}
 
@@ -400,83 +440,127 @@ func (s *Service) inspectNotificationConfig(ctx context.Context, exp *AlertExpla
 	}
 
 	if enabled > 0 {
-		if err := s.checkRecipients(ctx, exp, groupIDs, userIDs, types); err != nil {
+		if err := s.checkRecipients(ctx, exp, candidates, types); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// checkRecipients tests each candidate recipient's media against the event.
+type wireRecipientUser struct {
+	UserID   string `json:"userid"`
+	Username string `json:"username"`
+	Medias   []struct {
+		MediaTypeID string `json:"mediatypeid"`
+		SendTo      any    `json:"sendto"`
+		Active      string `json:"active"`
+		Severity    string `json:"severity"`
+		Period      string `json:"period"`
+	} `json:"medias"`
+}
+
+// checkRecipients checks static media enablement and severity filters for each
+// candidate recipient. Active periods are returned for diagnosis but are not
+// interpreted here.
 //
 // A user media carries a severity bitmask and an active period; either can
 // drop a notification without any error being recorded anywhere.
-func (s *Service) checkRecipients(ctx context.Context, exp *AlertExplanation, groupIDs, userIDs []string, types []MediaTypeCheck) error {
-	if len(groupIDs) == 0 && len(userIDs) == 0 {
+func (s *Service) checkRecipients(ctx context.Context, exp *AlertExplanation, candidates []notificationCandidate, types []MediaTypeCheck) error {
+	if len(candidates) == 0 {
 		exp.Findings = append(exp.Findings, "no enabled action names any user or user group to notify")
 		return nil
 	}
-	params := map[string]any{
-		"output":       []string{"userid", "username", "name"},
-		"selectMedias": "extend",
-		"limit":        100,
+	typeByID := make(map[string]MediaTypeCheck, len(types))
+	for _, mediaType := range types {
+		typeByID[mediaType.ID] = mediaType
 	}
-	if len(groupIDs) > 0 {
-		params["usrgrpids"] = groupIDs
-	}
-	if len(userIDs) > 0 {
-		params["userids"] = userIDs
-	}
-	var users []struct {
-		UserID   string `json:"userid"`
-		Username string `json:"username"`
-		Medias   []struct {
-			MediaTypeID string `json:"mediatypeid"`
-			SendTo      any    `json:"sendto"`
-			Active      string `json:"active"`
-			Severity    string `json:"severity"`
-			Period      string `json:"period"`
-		} `json:"medias"`
-	}
-	if err := s.client.CallIdempotent(ctx, "user.get", params, &users); err != nil {
-		return errs.FromAPI(err)
-	}
-
-	typeNames := map[string]string{}
-	for _, t := range types {
-		typeNames[t.ID] = t.Name
+	usersTruncated := false
+	fetch := func(filter string, ids []string) ([]wireRecipientUser, error) {
+		if len(ids) == 0 {
+			return nil, nil
+		}
+		params := map[string]any{
+			"output":       []string{"userid", "username", "name"},
+			"selectMedias": "extend",
+			"limit":        101,
+			filter:         ids,
+		}
+		var batch []wireRecipientUser
+		if err := s.client.CallIdempotent(ctx, "user.get", params, &batch); err != nil {
+			return nil, errs.FromAPI(err)
+		}
+		var truncated bool
+		batch, truncated = output.Bound(batch, 100)
+		if truncated {
+			usersTruncated = true
+		}
+		return batch, nil
 	}
 	severityBit := 1 << exp.Event.SeverityCode
 	reachable := 0
 	withMedia := 0
-	for _, u := range users {
-		for _, m := range u.Medias {
-			withMedia++
-			accepted := atoi(m.Severity)&severityBit != 0
-			active := m.Active == "0"
-			name := typeNames[m.MediaTypeID]
-			if name == "" {
-				name = "media type " + m.MediaTypeID
+	emitted := make(map[string]struct{})
+	for _, candidate := range candidates {
+		// Zabbix treats multiple user.get filters as an intersection. Resolve
+		// action groups and explicitly named users separately, then union them
+		// within this operation so its selected media type is preserved.
+		groupUsers, err := fetch("usrgrpids", candidate.GroupIDs)
+		if err != nil {
+			return err
+		}
+		directUsers, err := fetch("userids", candidate.UserIDs)
+		if err != nil {
+			return err
+		}
+		users := append(groupUsers, directUsers...)
+		seenUsers := make(map[string]struct{}, len(users))
+		for _, u := range users {
+			if _, seen := seenUsers[u.UserID]; seen {
+				continue
 			}
-			exp.Recipients = append(exp.Recipients, RecipientCheck{
-				User:             output.Sanitise(u.Username),
-				MediaType:        name,
-				SendTo:           output.Sanitise(sendToString(m.SendTo)),
-				MediaEnabled:     active,
-				SeverityAccepted: accepted,
-				Period:           output.Sanitise(m.Period),
-			})
-			if accepted && active {
-				reachable++
+			seenUsers[u.UserID] = struct{}{}
+			for _, m := range u.Medias {
+				if candidate.MediaTypeID != "" && candidate.MediaTypeID != "0" && candidate.MediaTypeID != m.MediaTypeID {
+					continue
+				}
+				key := u.UserID + "\x00" + m.MediaTypeID + "\x00" + sendToString(m.SendTo)
+				if _, seen := emitted[key]; seen {
+					continue
+				}
+				emitted[key] = struct{}{}
+				withMedia++
+				accepted := atoi(m.Severity)&severityBit != 0
+				userMediaEnabled := m.Active == "0"
+				mediaType, knownMediaType := typeByID[m.MediaTypeID]
+				mediaTypeEnabled := knownMediaType && mediaType.Enabled
+				name := mediaType.Name
+				if name == "" {
+					name = "media type " + m.MediaTypeID
+				}
+				exp.Recipients = append(exp.Recipients, RecipientCheck{
+					User:             output.Sanitise(u.Username),
+					MediaType:        name,
+					SendTo:           output.Sanitise(sendToString(m.SendTo)),
+					MediaEnabled:     userMediaEnabled && mediaTypeEnabled,
+					SeverityAccepted: accepted,
+					Period:           output.Sanitise(m.Period),
+				})
+				if accepted && userMediaEnabled && mediaTypeEnabled {
+					reachable++
+				}
 			}
 		}
 	}
+	if usersTruncated {
+		exp.Partial = true
+		exp.Warnings = append(exp.Warnings, "candidate recipients were truncated at 100 users for at least one action operation")
+	}
 	switch {
-	case withMedia == 0:
-		exp.Findings = append(exp.Findings, "no notified user has any media configured")
-	case reachable == 0:
+	case withMedia == 0 && !usersTruncated:
+		exp.Findings = append(exp.Findings, "no notified user has media selected by an enabled action")
+	case reachable == 0 && !usersTruncated:
 		exp.Findings = append(exp.Findings,
-			fmt.Sprintf("no user media accepts severity %q; every entry is disabled or filters this severity out", exp.Event.Severity))
+			fmt.Sprintf("no action-selected user media accepts severity %q; every entry, media type, or severity filter blocks delivery", exp.Event.Severity))
 	}
 	return nil
 }

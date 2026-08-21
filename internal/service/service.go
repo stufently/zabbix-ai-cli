@@ -10,6 +10,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -82,31 +84,41 @@ type task struct {
 // runParallel executes tasks with bounded concurrency and collects failures
 // per task instead of abandoning the whole aggregate.
 func runParallel(ctx context.Context, tasks []task) []string {
-	sem := make(chan struct{}, maxConcurrency)
+	if len(tasks) == 0 {
+		return nil
+	}
 	var mu sync.Mutex
 	var failures []string
 	var wg sync.WaitGroup
+	jobs := make(chan task, len(tasks))
 	for _, t := range tasks {
+		jobs <- t
+	}
+	close(jobs)
+	workers := min(maxConcurrency, len(tasks))
+	for range workers {
 		wg.Add(1)
-		go func(t task) {
+		go func() {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				mu.Lock()
-				failures = append(failures, t.name+": cancelled")
-				mu.Unlock()
-				return
+			for t := range jobs {
+				select {
+				case <-ctx.Done():
+					mu.Lock()
+					failures = append(failures, t.name+": cancelled")
+					mu.Unlock()
+					continue
+				default:
+				}
+				if err := t.run(ctx); err != nil {
+					mu.Lock()
+					failures = append(failures, fmt.Sprintf("%s: %v", t.name, err))
+					mu.Unlock()
+				}
 			}
-			defer func() { <-sem }()
-			if err := t.run(ctx); err != nil {
-				mu.Lock()
-				failures = append(failures, fmt.Sprintf("%s: %v", t.name, err))
-				mu.Unlock()
-			}
-		}(t)
+		}()
 	}
 	wg.Wait()
+	sort.Strings(failures)
 	return failures
 }
 
@@ -166,11 +178,16 @@ func ParseWindow(s string) (time.Duration, error) {
 		mult = 7 * 24 * time.Hour
 	}
 	if mult != 0 {
-		n, err := strconv.ParseFloat(strings.TrimRight(s, "dw"), 64)
-		if err != nil || n <= 0 {
+		n, err := strconv.ParseFloat(strings.TrimSuffix(s, s[len(s)-1:]), 64)
+		if err != nil || n <= 0 || math.IsInf(n, 0) || math.IsNaN(n) ||
+			n > float64(math.MaxInt64)/float64(mult) {
 			return 0, errs.Usage("invalid duration %q; use forms such as 30m, 2h, 7d, 2w", s)
 		}
-		return time.Duration(n * float64(mult)), nil
+		d := time.Duration(n * float64(mult))
+		if d <= 0 {
+			return 0, errs.Usage("invalid duration %q; use forms such as 30m, 2h, 7d, 2w", s)
+		}
+		return d, nil
 	}
 	d, err := time.ParseDuration(s)
 	if err != nil || d <= 0 {

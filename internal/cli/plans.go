@@ -24,6 +24,7 @@ func plansCommand(g *globals) *cobra.Command {
 	cmd.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "List outstanding plans",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			store, err := planStore()
 			if err != nil {

@@ -120,6 +120,25 @@ func TestDeleteRemovesTheToken(t *testing.T) {
 	}
 }
 
+func TestStoreRefusesToOverwriteCorruptCredentials(t *testing.T) {
+	dir := withConfigDir(t)
+	path := filepath.Join(dir, "credentials.toml")
+	original := []byte("[tokens\nthis is not toml\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Store("prod", config.Profile{}, "replacement"); err == nil {
+		t.Fatal("Store silently replaced a corrupt credentials file")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("corrupt file was modified: %q", got)
+	}
+}
+
 func TestReadTokenFromStdinTrims(t *testing.T) {
 	got, err := ReadTokenFromStdin(strings.NewReader("  abc123  \nignored\n"))
 	if err != nil || got != "abc123" {

@@ -318,7 +318,7 @@ func coerce(o *Operation, p Param, raw any) (any, error) {
 			// a float. Truncating it silently would turn "limit: 0.5" into
 			// "limit: 0", which reads as the default rather than as a
 			// mistake.
-			if t != math.Trunc(t) {
+			if t != math.Trunc(t) || math.IsInf(t, 0) || math.IsNaN(t) || !floatFitsInt(t) {
 				return nil, errs.Usage("%s: %q must be a whole number, not %v", o.CommandPath(), p.Name, t)
 			}
 			n = int(t)
@@ -383,6 +383,16 @@ func coerce(o *Operation, p Param, raw any) (any, error) {
 	default:
 		return nil, errs.Internal("parameter %q has an unknown type %q", p.Name, p.Type)
 	}
+}
+
+func floatFitsInt(v float64) bool {
+	if strconv.IntSize == 32 {
+		return v >= math.MinInt32 && v <= math.MaxInt32
+	}
+	// float64 cannot represent MaxInt64: converting it rounds up to 2^63,
+	// which is already outside the signed integer range. Use an exclusive
+	// upper bound and the exactly representable -2^63 lower bound.
+	return v >= float64(math.MinInt64) && v < -float64(math.MinInt64)
 }
 
 func stringOf(v any) (string, bool) {

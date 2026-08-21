@@ -224,10 +224,12 @@ never visible to an MCP client.
 
 ## 10. Build and distribution
 
-The official MCP Go SDK requires Go 1.25; the host toolchain is 1.22.2, so all
-builds and tests run in `golang:1.26` under UID 1002, and the resulting binary
-is copied to the host. The MCP container image is multi-stage, non-root, with a
-read-only root filesystem.
+The official MCP Go SDK requires Go 1.25. The container-first Make targets use
+`golang:1.27.0` and run with the invoking user's UID and GID so build artefacts
+remain writable on the host. CI and release workflows install Go 1.27.0 on the
+GitHub-hosted runner instead. The MCP image uses a multi-stage build and runs
+the final distroless image as a non-root user; it is designed to work with a
+read-only root filesystem and a writable state volume.
 
 License: Apache-2.0.
 

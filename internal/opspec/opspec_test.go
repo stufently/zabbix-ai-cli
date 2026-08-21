@@ -2,6 +2,7 @@ package opspec
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,18 @@ func TestBindCoercesTypes(t *testing.T) {
 	}
 	if got := args.Strings("hosts"); len(got) != 2 || got[0] != "a" {
 		t.Errorf("hosts = %v", got)
+	}
+}
+
+func TestBindRejectsIntegerOutsidePlatformRange(t *testing.T) {
+	op := &Operation{
+		Name: "test.range", CLI: []string{"test", "range"},
+		Params: []Param{{Name: "count", Type: TypeInt}},
+	}
+	for _, raw := range []any{math.Inf(1), math.Inf(-1), float64(math.MaxInt64)} {
+		if _, err := op.Bind(map[string]any{"count": raw}); err == nil {
+			t.Errorf("Bind accepted out-of-range integer %v", raw)
+		}
 	}
 }
 

@@ -161,7 +161,7 @@ func (s *Service) LatestValues(ctx context.Context, q ItemQuery) (Host, []Value,
 		return Host{}, nil, false, err
 	}
 	if len(items) == 0 {
-		return host, nil, false, nil
+		return host, []Value{}, false, nil
 	}
 	values, err := s.latestForItems(ctx, items)
 	var partial errPartialHistory
@@ -298,6 +298,7 @@ type Series struct {
 	Item
 	Points    []Point `json:"points"`
 	Truncated bool    `json:"truncated"`
+	ReadError string  `json:"read_error,omitempty"`
 	// Summary carries min, max and average for numeric items.
 	Summary *Summary `json:"summary,omitempty"`
 }
@@ -336,7 +337,7 @@ func (s *Service) History(ctx context.Context, q HistoryQuery) (Host, []Series, 
 		return Host{}, nil, err
 	}
 	if len(items) == 0 {
-		return host, nil, nil
+		return host, []Series{}, nil
 	}
 	window := q.Window
 	if window <= 0 {
@@ -351,7 +352,7 @@ func (s *Service) History(ctx context.Context, q HistoryQuery) (Host, []Series, 
 	tasks := make([]task, 0, len(items))
 	for i, w := range items {
 		i, w := i, w
-		series[i] = Series{Item: w.toItem()}
+		series[i] = Series{Item: w.toItem(), Points: []Point{}}
 		if w.ValueType == valueTypeBinary {
 			continue
 		}
@@ -360,6 +361,7 @@ func (s *Service) History(ctx context.Context, q HistoryQuery) (Host, []Series, 
 			run: func(ctx context.Context) error {
 				points, truncated, err := s.historyFor(ctx, w, window, limit)
 				if err != nil {
+					series[i].ReadError = err.Error()
 					return err
 				}
 				series[i].Points = points

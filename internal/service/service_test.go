@@ -333,10 +333,67 @@ func TestParseWindowAcceptsOperatorDurations(t *testing.T) {
 			t.Errorf("ParseWindow(%q) = %v, %v", tc.in, got, err)
 		}
 	}
-	for _, bad := range []string{"", "soon", "-1h", "0s", "5x"} {
+	for _, bad := range []string{"", "soon", "-1h", "0s", "5x", "2wd", "1e100d"} {
 		if _, err := service.ParseWindow(bad); err == nil {
 			t.Errorf("ParseWindow(%q) must fail", bad)
 		}
+	}
+}
+
+func TestResolveHostPrefersNumericIDOverFuzzyNames(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	srv.Handle("host.get", func(params map[string]any) (any, error) {
+		if _, ok := params["hostids"]; ok {
+			return []any{zbxtest.Host("123", "production", nil)}, nil
+		}
+		return []any{
+			zbxtest.Host("10", "server-123-a", nil),
+			zbxtest.Host("11", "server-123-b", nil),
+		}, nil
+	})
+	svc := newService(t, srv)
+
+	host, err := svc.ResolveHost(context.Background(), "123")
+	if err != nil {
+		t.Fatalf("ResolveHost: %v", err)
+	}
+	if host.ID != "123" || host.Name != "production" {
+		t.Fatalf("resolved %+v, want host ID 123", host)
+	}
+	if calls := srv.CallsTo("host.get"); len(calls) != 1 {
+		t.Fatalf("host.get called %d times; numeric ID should not fall through to fuzzy search", len(calls))
+	}
+}
+
+func TestPartialHistoryNamesTheFailedSeries(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	srv.Reply("host.get", []any{zbxtest.Host("10", "web01", nil)})
+	srv.Reply("item.get", []any{
+		zbxtest.Item("1", "10", "CPU idle", "system.cpu.util[,idle]", "0", nil),
+		zbxtest.Item("2", "10", "Uptime", "system.uptime", "3", nil),
+	})
+	srv.Handle("history.get", func(params map[string]any) (any, error) {
+		ids, _ := params["itemids"].([]any)
+		if len(ids) > 0 && ids[0] == "2" {
+			return nil, &zbxtest.APIError{Code: -32500, Message: "Internal error.", Data: "database is down"}
+		}
+		return []any{map[string]any{"itemid": "1", "clock": nowClock(), "value": "74.16"}}, nil
+	})
+	svc := newService(t, srv)
+
+	_, series, err := svc.History(context.Background(), service.HistoryQuery{Host: "web01", Limit: 10})
+	if err != nil {
+		t.Fatalf("a partial history failure must preserve successful series: %v", err)
+	}
+	byKey := map[string]service.Series{}
+	for _, s := range series {
+		byKey[s.Key] = s
+	}
+	if byKey["system.uptime"].ReadError == "" {
+		t.Fatal("failed series has no read_error")
+	}
+	if len(byKey["system.cpu.util[,idle]"].Points) != 1 {
+		t.Fatal("successful series was lost")
 	}
 }
 
@@ -545,5 +602,216 @@ func TestAFailedHistoryReadIsNotReportedAsNoData(t *testing.T) {
 	}
 	if ok := byKey["system.cpu.util[,idle]"]; ok.Value == "" || ok.NoData {
 		t.Errorf("the item that did answer was lost: %+v", ok)
+	}
+}
+
+func TestAlertFallbackUnionsGroupAndDirectRecipients(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	srv.Reply("event.get", []any{map[string]any{
+		"eventid": "42", "clock": nowClock(), "name": "Disk full", "severity": "4",
+		"acknowledged": "0", "value": "1", "objectid": "9", "r_eventid": "0",
+		"hosts": []any{}, "suppression_data": []any{},
+	}})
+	srv.Reply("alert.get", []any{})
+	srv.Handle("action.get", func(map[string]any) (any, error) {
+		return []any{map[string]any{
+			"actionid": "1", "name": "Notify", "status": "0", "eventsource": "0",
+			"operations": []any{map[string]any{
+				"operationtype": "0",
+				"opmessage":     map[string]any{"mediatypeid": "1"},
+				"opmessage_grp": []any{map[string]any{"usrgrpid": "10"}},
+				"opmessage_usr": []any{map[string]any{"userid": "20"}},
+			}},
+		}}, nil
+	})
+	srv.Reply("mediatype.get", []any{map[string]any{"mediatypeid": "1", "name": "Email", "status": "0"}})
+	srv.Handle("user.get", func(params map[string]any) (any, error) {
+		if _, hasGroups := params["usrgrpids"]; hasGroups {
+			if _, hasUsers := params["userids"]; hasUsers {
+				t.Fatal("group and user filters must not be intersected in one user.get call")
+			}
+			return []any{recipient("10", "group-user")}, nil
+		}
+		return []any{recipient("20", "direct-user")}, nil
+	})
+
+	exp, err := newService(t, srv).ExplainAlert(context.Background(), "42")
+	if err != nil {
+		t.Fatalf("ExplainAlert: %v", err)
+	}
+	if len(srv.CallsTo("user.get")) != 2 || len(exp.Recipients) != 2 {
+		t.Fatalf("recipient union failed: calls=%d recipients=%+v", len(srv.CallsTo("user.get")), exp.Recipients)
+	}
+	if !exp.Partial || len(exp.Warnings) == 0 || !strings.Contains(exp.Warnings[0], "candidates only") {
+		t.Fatalf("heuristic fallback must be explicit: partial=%v warnings=%v", exp.Partial, exp.Warnings)
+	}
+}
+
+func TestAlertReadFailureIsNotReportedAsNoAttempts(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	srv.Reply("event.get", []any{map[string]any{
+		"eventid": "42", "clock": nowClock(), "name": "Disk full", "severity": "4",
+		"acknowledged": "0", "value": "1", "objectid": "9", "r_eventid": "0",
+		"hosts": []any{}, "suppression_data": []any{},
+	}})
+	srv.Fail("alert.get", -32500, "Internal error.", "database is down")
+
+	exp, err := newService(t, srv).ExplainAlert(context.Background(), "42")
+	if err != nil {
+		t.Fatalf("ExplainAlert: %v", err)
+	}
+	for _, finding := range exp.Findings {
+		if strings.Contains(finding, "no delivery attempt") || strings.Contains(finding, "no obstacle") {
+			t.Fatalf("an unread result was reported as an empty result: %q", finding)
+		}
+	}
+	if !exp.Partial || len(exp.Warnings) == 0 || len(srv.CallsTo("action.get")) != 0 {
+		t.Fatalf("read failure was not kept distinct: partial=%v warnings=%v action calls=%d",
+			exp.Partial, exp.Warnings, len(srv.CallsTo("action.get")))
+	}
+}
+
+func TestAlertFallbackHonoursSelectedAndDisabledMediaTypes(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	srv.Reply("event.get", []any{map[string]any{
+		"eventid": "42", "clock": nowClock(), "name": "Disk full", "severity": "4",
+		"acknowledged": "0", "value": "1", "objectid": "9", "r_eventid": "0",
+		"hosts": []any{}, "suppression_data": []any{},
+	}})
+	srv.Reply("alert.get", []any{})
+	srv.Handle("action.get", func(map[string]any) (any, error) {
+		return []any{map[string]any{
+			"actionid": "1", "name": "Notify by SMS", "status": "0", "eventsource": "0",
+			"operations": []any{map[string]any{
+				"operationtype": "0", "opmessage": map[string]any{"mediatypeid": "2"},
+				"opmessage_usr": []any{map[string]any{"userid": "20"}}, "opmessage_grp": []any{},
+			}},
+		}}, nil
+	})
+	srv.Reply("mediatype.get", []any{
+		map[string]any{"mediatypeid": "1", "name": "Email", "status": "0"},
+		map[string]any{"mediatypeid": "2", "name": "SMS", "status": "1"},
+	})
+	srv.Reply("user.get", []any{map[string]any{
+		"userid": "20", "username": "operator",
+		"medias": []any{
+			map[string]any{"mediatypeid": "1", "sendto": "operator@example.com", "active": "0", "severity": "63", "period": "1-7,00:00-24:00"},
+			map[string]any{"mediatypeid": "2", "sendto": "+12025550123", "active": "0", "severity": "63", "period": "1-7,00:00-24:00"},
+		},
+	}})
+
+	exp, err := newService(t, srv).ExplainAlert(context.Background(), "42")
+	if err != nil {
+		t.Fatalf("ExplainAlert: %v", err)
+	}
+	if len(exp.Recipients) != 1 || exp.Recipients[0].MediaType != "SMS" || exp.Recipients[0].MediaEnabled {
+		t.Fatalf("operation media selection/global status was lost: %+v", exp.Recipients)
+	}
+	if !containsText(exp.Findings, "no action-selected user media") {
+		t.Fatalf("disabled selected media type was not diagnosed: %v", exp.Findings)
+	}
+}
+
+func TestAlertFallbackReportsTruncatedConfiguration(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	srv.Reply("event.get", []any{map[string]any{
+		"eventid": "42", "clock": nowClock(), "name": "Disk full", "severity": "4",
+		"acknowledged": "0", "value": "1", "objectid": "9", "r_eventid": "0",
+		"hosts": []any{}, "suppression_data": []any{},
+	}})
+	alerts := make([]any, 101)
+	for i := range alerts {
+		alerts[i] = map[string]any{"alertid": itoa64(int64(i + 1)), "status": "1", "clock": nowClock(), "alerttype": "0"}
+	}
+	srv.Reply("alert.get", alerts)
+
+	exp, err := newService(t, srv).ExplainAlert(context.Background(), "42")
+	if err != nil {
+		t.Fatalf("ExplainAlert: %v", err)
+	}
+	if len(exp.Attempts) != 100 || !exp.Partial || !containsText(exp.Warnings, "truncated at 100") {
+		t.Fatalf("attempt truncation was hidden: attempts=%d partial=%v warnings=%v", len(exp.Attempts), exp.Partial, exp.Warnings)
+	}
+}
+
+func TestAlertFallbackReportsTruncatedActionsAndRecipients(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	srv.Reply("event.get", []any{map[string]any{
+		"eventid": "42", "clock": nowClock(), "name": "Disk full", "severity": "4",
+		"acknowledged": "0", "value": "1", "objectid": "9", "r_eventid": "0",
+		"hosts": []any{}, "suppression_data": []any{},
+	}})
+	srv.Reply("alert.get", []any{})
+	actions := make([]any, 51)
+	actions[0] = map[string]any{
+		"actionid": "1", "name": "Notify", "status": "0", "eventsource": "0",
+		"operations": []any{map[string]any{
+			"operationtype": "0", "opmessage": map[string]any{"mediatypeid": "1"},
+			"opmessage_usr": []any{map[string]any{"userid": "20"}}, "opmessage_grp": []any{},
+		}},
+	}
+	for i := 1; i < len(actions); i++ {
+		actions[i] = map[string]any{"actionid": itoa64(int64(i + 1)), "name": "Disabled", "status": "1", "eventsource": "0", "operations": []any{}}
+	}
+	srv.Handle("action.get", func(map[string]any) (any, error) { return actions, nil })
+	srv.Reply("mediatype.get", []any{map[string]any{"mediatypeid": "1", "name": "Email", "status": "0"}})
+	users := make([]any, 101)
+	for i := range users {
+		users[i] = recipient(itoa64(int64(i+1)), "operator")
+	}
+	srv.Reply("user.get", users)
+
+	exp, err := newService(t, srv).ExplainAlert(context.Background(), "42")
+	if err != nil {
+		t.Fatalf("ExplainAlert: %v", err)
+	}
+	if !exp.Partial || !containsText(exp.Warnings, "actions were truncated") || !containsText(exp.Warnings, "recipients were truncated") {
+		t.Fatalf("configuration truncation was hidden: partial=%v warnings=%v", exp.Partial, exp.Warnings)
+	}
+}
+
+func TestHistoryPointsAreNeverNullForReturnedSeries(t *testing.T) {
+	srv := zbxtest.New(t, "7.4.10")
+	srv.Reply("host.get", []any{zbxtest.Host("10", "web01", nil)})
+	srv.Reply("item.get", []any{
+		zbxtest.Item("1", "10", "Binary", "binary", "5", nil),
+		zbxtest.Item("2", "10", "Broken", "broken", "0", nil),
+		zbxtest.Item("3", "10", "Working", "working", "0", nil),
+	})
+	srv.Handle("history.get", func(params map[string]any) (any, error) {
+		ids, _ := params["itemids"].([]any)
+		if len(ids) > 0 && ids[0] == "2" {
+			return nil, &zbxtest.APIError{Code: -32500, Message: "Internal error.", Data: "database is down"}
+		}
+		return []any{map[string]any{"itemid": "3", "clock": nowClock(), "value": "1"}}, nil
+	})
+
+	_, series, err := newService(t, srv).History(context.Background(), service.HistoryQuery{Host: "web01", Items: 3})
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	for _, itemSeries := range series {
+		if itemSeries.Points == nil {
+			t.Errorf("%s points are nil and would serialize as null", itemSeries.Key)
+		}
+	}
+}
+
+func containsText(values []string, fragment string) bool {
+	for _, value := range values {
+		if strings.Contains(value, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func recipient(id, username string) map[string]any {
+	return map[string]any{
+		"userid": id, "username": username,
+		"medias": []any{map[string]any{
+			"mediatypeid": "1", "sendto": username + "@example.com", "active": "0",
+			"severity": "63", "period": "1-7,00:00-24:00",
+		}},
 	}
 }

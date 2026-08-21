@@ -1,6 +1,8 @@
-# Builds and tests run inside a container, so a host with an older Go toolchain
-# still produces a correct binary. The MCP SDK requires Go 1.25.
-GO_IMAGE   ?= golang:1.26
+# Builds and tests run inside Linux containers, so a host with an older Go
+# toolchain still produces a correct Linux binary. Keep this on the latest
+# stable Go release. Use the Go toolchain directly for a host-native binary.
+GO_IMAGE   ?= golang:1.27.0
+GOLANGCI_LINT_VERSION ?= v2.13.1
 BINARY     := zabbix-ai-cli
 PKG        := ./cmd/zabbix-ai-cli
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -20,7 +22,7 @@ GO = docker run --rm -u $(UID):$(GID) \
 
 all: fmt-check vet test build
 
-## build: compile the binary into ./bin
+## build: compile a Linux binary into ./bin using Docker
 build:
 	@mkdir -p bin $(CACHE)
 	$(GO) go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY) $(PKG)
@@ -55,7 +57,7 @@ lint:
 	@mkdir -p $(CACHE)
 	docker run --rm -u $(UID):$(GID) -v $(CURDIR):/src -v $(CACHE):/cache \
 		-e GOCACHE=/cache/build -e GOMODCACHE=/cache/mod -e GOLANGCI_LINT_CACHE=/cache/lint \
-		-w /src golangci/golangci-lint:latest-alpine golangci-lint run
+		-w /src golangci/golangci-lint:$(GOLANGCI_LINT_VERSION)-alpine golangci-lint run
 
 ## tidy: tidy go.mod and go.sum
 tidy:
@@ -65,8 +67,13 @@ tidy:
 docker:
 	docker build --build-arg VERSION=$(VERSION) -t $(BINARY):$(VERSION) -t $(BINARY):latest .
 
-## install: copy the binary into ~/bin
-install: build
+## install: build and install the Linux binary into ~/bin (Linux hosts only)
+install:
+	@if [ "$(shell uname -s)" != "Linux" ]; then \
+		echo "make install produces a Linux binary; use 'go install ./cmd/zabbix-ai-cli' for a host-native install"; \
+		exit 1; \
+	fi
+	$(MAKE) build
 	@mkdir -p $(HOME)/bin
 	install -m 0755 bin/$(BINARY) $(HOME)/bin/$(BINARY)
 	@echo "installed $(HOME)/bin/$(BINARY)"

@@ -320,19 +320,30 @@ func (s *Service) ResolveHost(ctx context.Context, pattern string) (Host, error)
 	if pattern == "" {
 		return Host{}, errs.Usage("no host was given")
 	}
+	// An identifier is unambiguous and must win over fuzzy name matches. A
+	// numeric host name containing the same digits must never redirect an
+	// operation that explicitly names a host ID.
+	if isNumeric(pattern) {
+		var wire []wireHost
+		params := map[string]any{
+			"output":                hostOutputFields,
+			"hostids":               []string{pattern},
+			"selectInterfaces":      "extend",
+			"selectTags":            "extend",
+			"selectParentTemplates": []string{"templateid", "name"},
+		}
+		if err := s.client.CallIdempotent(ctx, "host.get", params, &wire); err != nil {
+			return Host{}, errs.FromAPI(err)
+		}
+		if len(wire) == 1 {
+			return wire[0].toHost(), nil
+		}
+	}
 	hosts, _, err := s.ListHosts(ctx, HostQuery{Search: pattern, Limit: 20, WithDetail: true})
 	if err != nil {
 		return Host{}, err
 	}
 	if len(hosts) == 0 {
-		// The pattern may be a host ID rather than a name.
-		if isNumeric(pattern) {
-			var wire []wireHost
-			params := map[string]any{"output": hostOutputFields, "hostids": []string{pattern}}
-			if err := s.client.CallIdempotent(ctx, "host.get", params, &wire); err == nil && len(wire) == 1 {
-				return wire[0].toHost(), nil
-			}
-		}
 		return Host{}, errs.HostNotFound(pattern)
 	}
 	if len(hosts) == 1 {

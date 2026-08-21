@@ -18,6 +18,7 @@ func mcpCommand(g *globals) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mcp",
 		Short: "Serve the Model Context Protocol",
+		Args:  cobra.NoArgs,
 		Long: "Exposes the same operations the CLI runs as MCP tools, over stdio by default.\n\n" +
 			"The Zabbix token stays inside this process; an MCP client never sees it. No tool can " +
 			"change Zabbix: a write request produces a plan that a person approves with " +

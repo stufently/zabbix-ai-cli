@@ -123,6 +123,42 @@ func TestListDropsExpiredPlans(t *testing.T) {
 	}
 }
 
+func TestListReportsCorruptPlans(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.Dir(), "pl_aaaaaaaaaaaa.json")
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err == nil || !strings.Contains(err.Error(), "corrupt") {
+		t.Fatalf("List hid a corrupt plan: %v", err)
+	}
+}
+
+func TestListIgnoresTemporaryPlanFiles(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := newPlan(t)
+	if err := store.Save(fresh); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.Dir(), ".plan-interrupted.json"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plans, err := store.List()
+	if err != nil {
+		t.Fatalf("List treated a temporary file as a plan: %v", err)
+	}
+	if len(plans) != 1 || plans[0].ID != fresh.ID {
+		t.Fatalf("List returned %#v, want only %s", plans, fresh.ID)
+	}
+}
+
 func TestAuditLogRecordsAndFinds(t *testing.T) {
 	dir := t.TempDir()
 	log, err := NewAuditLog(dir)
@@ -324,6 +360,10 @@ func TestClaimLetsOnlyOneApplierThrough(t *testing.T) {
 	if err := store.Claim(p.ID); err != nil {
 		t.Fatalf("the first claim must succeed: %v", err)
 	}
+	claimed, err := store.Claimed(p.ID)
+	if err != nil || !claimed {
+		t.Fatalf("Claimed = %v, %v; want true", claimed, err)
+	}
 	// Two concurrent approvals must not both reach Zabbix.
 	if err := store.Claim(p.ID); err == nil {
 		t.Fatal("a second claim must be refused")
@@ -333,6 +373,10 @@ func TestClaimLetsOnlyOneApplierThrough(t *testing.T) {
 	}
 	if err := store.Discard(p.ID); err != nil {
 		t.Errorf("Discard: %v", err)
+	}
+	claimed, err = store.Claimed(p.ID)
+	if err != nil || claimed {
+		t.Fatalf("Claimed after Discard = %v, %v; want false", claimed, err)
 	}
 }
 

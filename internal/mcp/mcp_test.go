@@ -3,8 +3,11 @@ package mcp_test
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stufently/zabbix-ai-cli/internal/api"
@@ -22,6 +25,7 @@ type harness struct {
 	server  *zbxtest.Server
 	session *sdk.ClientSession
 	plans   *safety.Store
+	audit   *safety.AuditLog
 }
 
 func newHarness(t *testing.T, readOnly bool, scopes ...string) *harness {
@@ -62,7 +66,7 @@ func newHarness(t *testing.T, readOnly bool, scopes ...string) *harness {
 		t.Fatalf("client connect: %v", err)
 	}
 	t.Cleanup(func() { _ = session.Close() })
-	return &harness{server: srv, session: session, plans: plans}
+	return &harness{server: srv, session: session, plans: plans, audit: audit}
 }
 
 func (h *harness) call(t *testing.T, name string, args map[string]any) *sdk.CallToolResult {
@@ -259,6 +263,81 @@ func TestPlanStatusReportsTheOutcome(t *testing.T) {
 	data = envelope(t, res)["data"].(map[string]any)
 	if data["status"] != "gone" {
 		t.Errorf("status for an unknown plan = %v", data["status"])
+	}
+}
+
+func TestPlanStatusReportsCorruptPlanInsteadOfCallingItGone(t *testing.T) {
+	h := newHarness(t, false, config.ScopeMaintenance)
+	path := filepath.Join(h.plans.Dir(), "pl_aaaaaaaaaaaa.json")
+	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	res := h.call(t, "zabbix_plan_status", map[string]any{"plan_id": "pl_aaaaaaaaaaaa"})
+	if !res.IsError {
+		t.Fatal("corrupt plan was reported as a normal status")
+	}
+	if !strings.Contains(text(t, res), "corrupt") {
+		t.Fatalf("error does not explain the corrupt plan: %s", text(t, res))
+	}
+}
+
+func TestPlanStatusReportsExpiredAndClaimedPlans(t *testing.T) {
+	h := newHarness(t, false, config.ScopeMaintenance)
+
+	expired, err := safety.NewPlan("maintenance.create", "test", safety.RiskWrite, safety.ScopeMaintenance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired.ExpiresAt = time.Now().Add(-time.Minute)
+	expired.Summary = "expired plan"
+	if err := expired.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.plans.Save(expired); err != nil {
+		t.Fatal(err)
+	}
+	res := h.call(t, "zabbix_plan_status", map[string]any{"plan_id": expired.ID})
+	data := envelope(t, res)["data"].(map[string]any)
+	if data["status"] != "expired" {
+		t.Fatalf("expired plan status = %v", data["status"])
+	}
+	if _, ok := data["approve_command"]; ok {
+		t.Fatal("expired plan still advertises an approve command")
+	}
+
+	claimed, err := safety.NewPlan("maintenance.create", "test", safety.RiskWrite, safety.ScopeMaintenance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := claimed.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.plans.Save(claimed); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.plans.Claim(claimed.ID); err != nil {
+		t.Fatal(err)
+	}
+	res = h.call(t, "zabbix_plan_status", map[string]any{"plan_id": claimed.ID})
+	data = envelope(t, res)["data"].(map[string]any)
+	if data["status"] != "applying" {
+		t.Fatalf("claimed plan status = %v", data["status"])
+	}
+}
+
+func TestPlanStatusReturnsAuditReadErrors(t *testing.T) {
+	h := newHarness(t, false, config.ScopeMaintenance)
+	if err := os.Mkdir(h.audit.Path(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	res := h.call(t, "zabbix_plan_status", map[string]any{"plan_id": "pl_ffffffffffff"})
+	if !res.IsError {
+		t.Fatal("audit read failure was reported as a normal plan status")
+	}
+	if strings.Contains(text(t, res), `"status": "gone"`) {
+		t.Fatalf("audit read failure was masked as gone: %s", text(t, res))
 	}
 }
 

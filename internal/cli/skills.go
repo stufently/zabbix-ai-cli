@@ -19,6 +19,7 @@ func skillsCommand(g *globals) *cobra.Command {
 	cmd.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "List the bundled skills",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			list, err := skills.List()
 			if err != nil {

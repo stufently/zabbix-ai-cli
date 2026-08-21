@@ -28,6 +28,7 @@ func loginCommand(g *globals) *cobra.Command {
 		Long: "Prompts for anything not supplied. The token is never accepted as a flag, because flag " +
 			"values are visible in shell history and in the process list; pipe it in with --token-stdin instead.\n\n" +
 			"The token is verified against the server before it is stored.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := g.profile
 			if name == "" {
@@ -68,10 +69,21 @@ func loginCommand(g *globals) *cobra.Command {
 			if err := config.ValidateScopes(scopes); err != nil {
 				return err
 			}
+			backend := store
+			if backend == "" {
+				if existing.Keyring {
+					backend = "keyring"
+				} else {
+					backend = "file"
+				}
+			}
+			if backend != "file" && backend != "keyring" {
+				return errs.Usage("--store must be file or keyring")
+			}
 			profile := config.Profile{
 				URL:            strings.TrimSpace(url),
 				Scopes:         scopes,
-				Keyring:        store == "keyring",
+				Keyring:        backend == "keyring",
 				TimeoutSeconds: existing.TimeoutSeconds,
 				CAFile:         existing.CAFile,
 				Insecure:       existing.Insecure,
@@ -85,15 +97,13 @@ func loginCommand(g *globals) *cobra.Command {
 				return err
 			}
 
-			source, err := auth.Store(name, profile, token)
+			source, err := persistLogin(cfg, name, existing, profile, token, loginPersistence{
+				store:  auth.Store,
+				lookup: auth.LookupStored,
+				delete: auth.Delete,
+				save:   config.Save,
+			})
 			if err != nil {
-				return err
-			}
-			cfg.Profiles[name] = profile
-			if cfg.ActiveProfile == "" {
-				cfg.ActiveProfile = name
-			}
-			if err := config.Save(cfg); err != nil {
 				return err
 			}
 
@@ -119,10 +129,89 @@ func loginCommand(g *globals) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&url, "url", "", "Zabbix URL, for example https://zabbix.example.com")
-	cmd.Flags().StringVar(&store, "store", "file", "where to keep the token: file or keyring")
+	cmd.Flags().StringVar(&store, "store", "", "where to keep the token: file or keyring (default: preserve the current backend, or file for a new profile)")
 	cmd.Flags().StringSliceVar(&scopes, "scopes", nil,
 		"scopes this profile may plan writes for: "+strings.Join(config.KnownScopes, ", "))
 	return cmd
+}
+
+// loginPersistence keeps the credential and config mutations testable as one
+// transaction. In production these functions are auth.Store, auth.Delete and
+// config.Save; tests can make each step fail without touching a real keyring.
+type loginPersistence struct {
+	store  func(string, config.Profile, string) (auth.Source, error)
+	lookup func(string, config.Profile) (string, bool, error)
+	delete func(string, config.Profile) error
+	save   func(*config.Config) error
+}
+
+func persistLogin(cfg *config.Config, name string, existing, profile config.Profile, token string, p loginPersistence) (auth.Source, error) {
+	previous, existed := cfg.Profiles[name]
+	previousActive := cfg.ActiveProfile
+	newLocation := !existed || existing.Keyring != profile.Keyring
+	var previousToken string
+	var hadPreviousToken bool
+	if existed && !newLocation {
+		var err error
+		previousToken, hadPreviousToken, err = p.lookup(name, existing)
+		if err != nil {
+			return auth.SourceNone, fmt.Errorf("read existing credential before replacement: %w", err)
+		}
+	}
+
+	source, err := p.store(name, profile, token)
+	if err != nil {
+		return auth.SourceNone, err
+	}
+	cfg.Profiles[name] = profile
+	if cfg.ActiveProfile == "" {
+		cfg.ActiveProfile = name
+	}
+	newActive := cfg.ActiveProfile
+	if err := p.save(cfg); err != nil {
+		restoreProfile(cfg, name, previous, existed, previousActive)
+		var rollbackErr error
+		if newLocation {
+			rollbackErr = p.delete(name, profile)
+		} else if hadPreviousToken {
+			_, rollbackErr = p.store(name, existing, previousToken)
+		} else {
+			rollbackErr = p.delete(name, profile)
+		}
+		if rollbackErr != nil {
+			return auth.SourceNone, fmt.Errorf("save profile: %w; restore previous credential: %v", err, rollbackErr)
+		}
+		return auth.SourceNone, err
+	}
+
+	if existed && existing.Keyring != profile.Keyring {
+		if cleanupErr := p.delete(name, existing); cleanupErr != nil {
+			// Keep config and credential selection consistent: if the old secret
+			// cannot be removed, put the config back and remove the new copy.
+			restoreProfile(cfg, name, previous, true, previousActive)
+			if rollbackErr := p.save(cfg); rollbackErr != nil {
+				// The persisted config still selects the new backend, so its token
+				// must remain available even though the cleanup could not finish.
+				cfg.Profiles[name] = profile
+				cfg.ActiveProfile = newActive
+				return auth.SourceNone, fmt.Errorf("remove token from previous backend: %w; restore profile configuration: %v", cleanupErr, rollbackErr)
+			}
+			if rollbackErr := p.delete(name, profile); rollbackErr != nil {
+				return auth.SourceNone, fmt.Errorf("remove token from previous backend: %w; remove token from new backend during rollback: %v", cleanupErr, rollbackErr)
+			}
+			return auth.SourceNone, fmt.Errorf("remove token from previous backend: %w", cleanupErr)
+		}
+	}
+	return source, nil
+}
+
+func restoreProfile(cfg *config.Config, name string, previous config.Profile, existed bool, active string) {
+	if existed {
+		cfg.Profiles[name] = previous
+	} else {
+		delete(cfg.Profiles, name)
+	}
+	cfg.ActiveProfile = active
 }
 
 func grantedScopes(p config.Profile) []string {
@@ -161,6 +250,7 @@ func logoutCommand(g *globals) *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
 		Short: "Remove the stored token for a profile",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -189,6 +279,7 @@ func authCommand(g *globals) *cobra.Command {
 	cmd.AddCommand(&cobra.Command{
 		Use:   "status",
 		Short: "Check whether the active profile can reach Zabbix",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -246,6 +337,7 @@ func profileCommand(g *globals) *cobra.Command {
 	cmd.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "List configured profiles",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -257,7 +349,7 @@ func profileCommand(g *globals) *cobra.Command {
 				Active bool     `json:"active"`
 				Scopes []string `json:"scopes"`
 			}
-			var list []entry
+			list := make([]entry, 0, len(cfg.Profiles))
 			rows := [][]string{}
 			for _, name := range cfg.Names() {
 				p := cfg.Profiles[name]

@@ -65,6 +65,18 @@ func (g *globals) resolveFormat() output.Format {
 	}
 }
 
+func (g *globals) validate() error {
+	switch g.format {
+	case "", "auto", "json", "table":
+	default:
+		return errs.Usage("unknown output format %q; use auto, json or table", g.format)
+	}
+	if g.timeout < 0 {
+		return errs.Usage("--timeout must not be negative")
+	}
+	return nil
+}
+
 func isTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	if !ok {
@@ -124,6 +136,9 @@ func (g *globals) buildEnv(ctx context.Context) (*opspec.Env, error) {
 		opts = append(opts, api.WithLogger(func(format string, args ...any) {
 			fmt.Fprintf(g.stderr, "debug: "+format+"\n", args...)
 		}))
+	}
+	if g.verbose {
+		fmt.Fprintf(g.stderr, "using profile %s (%s)\n", name, profile.URL)
 	}
 	client := api.New(profile.URL, token.Value, opts...)
 
@@ -204,6 +219,9 @@ func newRootCommand(g *globals) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       Version,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return g.validate()
+		},
 	}
 	// Cobra reports a mistyped flag as a plain error, which would otherwise
 	// surface as an internal failure with the wrong exit status.
@@ -290,6 +308,7 @@ func versionCommand(g *globals) *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print the version",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if g.resolveFormat() == output.FormatJSON {
 				res := &output.Result{Data: map[string]string{"version": Version}}

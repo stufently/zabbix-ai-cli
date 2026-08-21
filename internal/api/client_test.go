@@ -155,6 +155,32 @@ func TestContextCancellationIsNotRetried(t *testing.T) {
 	}
 }
 
+func TestMalformedSuccessWithoutResultIsRejected(t *testing.T) {
+	s := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1}`)
+	})
+	c := New(s.URL, "token", WithMaxRetries(0))
+	if err := c.Call(context.Background(), "host.get", nil, nil); err == nil {
+		t.Fatal("response without result or error was accepted")
+	}
+}
+
+func TestInvalidOptionsFallBackToSafeDefaults(t *testing.T) {
+	s := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","result":[],"id":1}`)
+	})
+	c := New(s.URL, "token", WithHTTPClient(nil), WithMaxResponseBytes(0), WithMaxRetries(-1))
+	// A nil client is repaired rather than panicking. Point it at the local
+	// test transport after construction so the assertion does not use DNS.
+	c.http = s.Client()
+	var out []any
+	if err := c.CallIdempotent(context.Background(), "host.get", nil, &out); err != nil {
+		t.Fatalf("safe defaults failed: %v", err)
+	}
+}
+
 func TestDebugLogNeverCarriesCredentials(t *testing.T) {
 	s := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","result":[],"id":1}`)

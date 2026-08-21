@@ -2,12 +2,19 @@ package ops
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/stufently/zabbix-ai-cli/internal/api"
 	"github.com/stufently/zabbix-ai-cli/internal/config"
 	"github.com/stufently/zabbix-ai-cli/internal/opspec"
 	"github.com/stufently/zabbix-ai-cli/internal/safety"
+	"github.com/stufently/zabbix-ai-cli/internal/service"
 )
 
 func TestEveryOperationIsWellFormed(t *testing.T) {
@@ -208,5 +215,74 @@ func TestARawPlanIsClassifiedFromItsMethodNotItsFile(t *testing.T) {
 
 	if _, err := Apply(context.Background(), env, plan, ApplyOptions{Approval: safety.ApprovalTerminal}); err == nil {
 		t.Fatal("a raw plan understating its own risk was applied")
+	}
+}
+
+func TestApplyReportsBothAuditAndPlanCleanupFailures(t *testing.T) {
+	stateDir := t.TempDir()
+	store, err := safety.NewStore(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit, err := safety.NewAuditLog(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A directory where audit.log should be makes Append fail reliably.
+	if err := os.Mkdir(audit.Path(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := safety.NewPlan("api.call", "prod", safety.RiskWrite, safety.ScopeMaintenance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Params = map[string]any{"method": "maintenance.create", "params": map[string]any{}}
+	if err := plan.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(plan); err != nil {
+		t.Fatal(err)
+	}
+	claimedPath := filepath.Join(store.Dir(), plan.ID+".json.claimed")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Claim has already renamed the plan. Replace the claimed file with a
+		// non-empty directory, which Discard cannot remove on any platform.
+		if err := os.Remove(claimedPath); err != nil {
+			t.Errorf("remove claimed plan: %v", err)
+		}
+		if err := os.Mkdir(claimedPath, 0o700); err != nil {
+			t.Errorf("replace claimed plan: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(claimedPath, "blocker"), []byte("x"), 0o600); err != nil {
+			t.Errorf("make claimed directory non-empty: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"write failed"},"id":1}`)
+	}))
+	t.Cleanup(server.Close)
+	env := &opspec.Env{
+		Service: service.New(api.New(server.URL, "token")),
+		Profile: "prod",
+		Config:  config.Profile{Scopes: []string{config.ScopeMaintenance}},
+		Plans:   store,
+		Audit:   audit,
+	}
+
+	_, err = Apply(context.Background(), env, plan, ApplyOptions{Approval: safety.ApprovalTerminal})
+	if err == nil {
+		t.Fatal("Apply unexpectedly succeeded")
+	}
+	for _, want := range []string{"could not be written to the audit log", "plan file could not be removed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Apply error %q does not contain %q", err, want)
+		}
+	}
+}
+
+func TestHistorySummaryShowsReadErrorInTable(t *testing.T) {
+	got := historySummary(service.Series{ReadError: "history permission denied"})
+	if !strings.Contains(got, "read error") || !strings.Contains(got, "permission denied") {
+		t.Fatalf("history summary = %q", got)
 	}
 }

@@ -49,7 +49,7 @@ func (s *Service) ListUnreachable(ctx context.Context, limit int) ([]Unreachable
 		byHost[w.HostID] = append(byHost[w.HostID], w.wireInterface)
 	}
 	if len(hostIDs) == 0 {
-		return nil, false, nil
+		return []UnreachableHost{}, false, nil
 	}
 
 	var hosts []wireHost

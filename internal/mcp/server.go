@@ -8,8 +8,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stufently/zabbix-ai-cli/internal/errs"
@@ -211,11 +213,32 @@ func planStatus(env *opspec.Env, planID string) (*output.Result, error) {
 	}
 	data := map[string]any{"plan_id": planID}
 	if env.Plans != nil {
-		if plan, err := env.Plans.Load(planID); err == nil {
-			data["status"] = "awaiting approval"
+		plan, err := env.Plans.Load(planID)
+		if err == nil {
+			if plan.Expired(time.Now()) {
+				data["status"] = "expired"
+				data["expired_at"] = plan.ExpiresAt
+			} else {
+				data["status"] = "awaiting approval"
+				data["approve_command"] = ops.ApproveCommand(plan)
+			}
 			data["summary"] = plan.Summary
 			data["expires_at"] = plan.ExpiresAt
-			data["approve_command"] = ops.ApproveCommand(plan)
+			res := &output.Result{Data: data}
+			res.Meta.Returned = 1
+			return res, nil
+		}
+		var e *errs.E
+		if !errors.As(err, &e) || e.Code != errs.CodePlanNotFound {
+			return nil, err
+		}
+		claimed, claimErr := env.Plans.Claimed(planID)
+		if claimErr != nil {
+			return nil, claimErr
+		}
+		if claimed {
+			data["status"] = "applying"
+			data["detail"] = "the plan has been claimed by an applier; check again for its audited outcome"
 			res := &output.Result{Data: data}
 			res.Meta.Returned = 1
 			return res, nil
@@ -223,7 +246,10 @@ func planStatus(env *opspec.Env, planID string) (*output.Result, error) {
 	}
 	if env.Audit != nil {
 		entry, err := env.Audit.Find(planID)
-		if err == nil && entry != nil {
+		if err != nil {
+			return nil, err
+		}
+		if entry != nil {
 			data["status"] = entry.Outcome
 			data["applied_at"] = entry.Time
 			data["operation"] = entry.Operation

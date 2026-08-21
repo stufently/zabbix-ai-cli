@@ -121,6 +121,27 @@ func Store(name string, p config.Profile, token string) (Source, error) {
 	return SourceFile, nil
 }
 
+// LookupStored reads only the persistent backend selected by the profile. It
+// deliberately ignores environment and token-file overrides, which makes it
+// suitable for transactional credential replacement and rollback.
+func LookupStored(name string, p config.Profile) (string, bool, error) {
+	if p.Keyring {
+		v, err := keyring.Get(keyringService, name)
+		if errors.Is(err, keyring.ErrNotFound) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, keyringFailure(name, err)
+		}
+		return v, true, nil
+	}
+	v, err := readCredentialsFile(name)
+	if err != nil {
+		return "", false, err
+	}
+	return v, v != "", nil
+}
+
 // Delete removes a stored token. A missing token is not an error.
 func Delete(name string, p config.Profile) error {
 	if p.Keyring {
@@ -174,7 +195,9 @@ func writeCredentialsFile(name, token string) error {
 	}
 	c := credentials{Tokens: map[string]string{}}
 	if data, err := readSecretFile(path); err == nil {
-		_ = toml.Unmarshal(data, &c)
+		if err := toml.Unmarshal(data, &c); err != nil {
+			return errs.Usage("credentials file %s is not valid TOML: %v", path, err)
+		}
 		if c.Tokens == nil {
 			c.Tokens = map[string]string{}
 		}

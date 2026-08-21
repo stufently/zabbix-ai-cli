@@ -71,6 +71,18 @@ func New(baseURL, token string, opts ...Option) *Client {
 	for _, o := range opts {
 		o(c)
 	}
+	// Options are internal today, but keeping invalid values from turning into
+	// panics or silently disabling the response bound makes the client safe to
+	// reuse from future front ends.
+	if c.http == nil {
+		c.http = &http.Client{Timeout: 30 * time.Second}
+	}
+	if c.maxResponseBytes <= 0 {
+		c.maxResponseBytes = DefaultMaxResponseBytes
+	}
+	if c.maxRetries < 0 {
+		c.maxRetries = 0
+	}
 	return c
 }
 
@@ -238,6 +250,12 @@ func (c *Client) attempt(ctx context.Context, method string, body []byte, result
 	if rr.Error != nil {
 		c.debugf("<- %s error %d %s", method, rr.Error.Code, rr.Error.Message)
 		return rr.Error
+	}
+	if len(rr.Result) == 0 {
+		return &TransportError{
+			Op:  "decode response " + method,
+			Err: errors.New("JSON-RPC response contains neither result nor error"),
+		}
 	}
 	c.debugf("<- %s ok (%d bytes)", method, len(rr.Result))
 	if result == nil {

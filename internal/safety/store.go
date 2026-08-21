@@ -95,6 +95,9 @@ func (s *Store) Load(id string) (*Plan, error) {
 	if err := json.Unmarshal(data, &p); err != nil {
 		return nil, errs.Internal("plan %s is corrupt: %v", id, err)
 	}
+	if p.ID != id {
+		return nil, errs.Internal("plan %s is corrupt: it contains identifier %q", id, p.ID)
+	}
 	return &p, nil
 }
 
@@ -106,7 +109,7 @@ func (s *Store) List() ([]*Plan, error) {
 		return nil, err
 	}
 	now := time.Now()
-	var plans []*Plan
+	plans := make([]*Plan, 0)
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -124,18 +127,44 @@ func (s *Store) List() ([]*Plan, error) {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".json")
-		p, err := s.Load(id)
-		if err != nil {
+		// Save uses .plan-*.json as its temporary-file pattern. A concurrent
+		// List (or a temp file left behind after a crash) must not treat one of
+		// those implementation details as a corrupt stored plan.
+		if !planIDPattern.MatchString(id) {
 			continue
 		}
+		p, err := s.Load(id)
+		if err != nil {
+			return nil, err
+		}
 		if p.Expired(now) {
-			_ = s.Delete(id)
+			if err := s.Delete(id); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		plans = append(plans, p)
 	}
 	sort.Slice(plans, func(i, j int) bool { return plans[i].CreatedAt.After(plans[j].CreatedAt) })
 	return plans, nil
+}
+
+// Claimed reports whether an applier currently owns the plan. A claimed plan
+// is deliberately invisible to Load, but status callers still need to
+// distinguish an in-flight application from a plan that is genuinely gone.
+func (s *Store) Claimed(id string) (bool, error) {
+	path, err := s.path(id)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(path + claimedSuffix)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 // Delete removes a plan. A missing plan is not an error.

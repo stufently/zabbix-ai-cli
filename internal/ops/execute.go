@@ -187,7 +187,7 @@ func Apply(ctx context.Context, env *opspec.Env, plan *safety.Plan, opts ApplyOp
 	}
 
 	result, applyErr := env.Service.ApplyPlan(ctx, plan)
-	var auditWarning string
+	var postApplyWarnings []string
 	if env.Audit != nil {
 		entry := safety.AuditEntry{
 			Profile:   env.Profile,
@@ -210,18 +210,26 @@ func Apply(ctx context.Context, env *opspec.Env, plan *safety.Plan, opts ApplyOp
 		// to tell. If the log cannot be written, say so where the caller will
 		// see it rather than swallowing it.
 		if auditErr := env.Audit.Append(entry); auditErr != nil {
-			auditWarning = "the change was applied but could not be written to the audit log: " + auditErr.Error()
+			postApplyWarnings = append(postApplyWarnings,
+				"the change attempt could not be written to the audit log: "+auditErr.Error())
 		}
 	}
 	// The plan is discarded either way. A write that failed mid-flight may
 	// still have reached Zabbix, so leaving it available to retry would invite
 	// applying the same change twice.
 	if env.Plans != nil {
-		if discardErr := env.Plans.Discard(plan.ID); discardErr != nil && auditWarning == "" {
-			auditWarning = "the plan file could not be removed after applying: " + discardErr.Error()
+		if discardErr := env.Plans.Discard(plan.ID); discardErr != nil {
+			postApplyWarnings = append(postApplyWarnings,
+				"the plan file could not be removed after applying: "+discardErr.Error())
 		}
 	}
 	if applyErr != nil {
+		if len(postApplyWarnings) > 0 {
+			base := errs.FromAPI(applyErr)
+			combined := *base
+			combined.Message += "; " + strings.Join(postApplyWarnings, "; ")
+			return nil, &combined
+		}
 		return nil, applyErr
 	}
 
@@ -233,8 +241,8 @@ func Apply(ctx context.Context, env *opspec.Env, plan *safety.Plan, opts ApplyOp
 	}}
 	res.Meta.Returned = 1
 	res.Meta.Profile = env.Profile
-	if auditWarning != "" {
-		res.Warnings = append(res.Warnings, auditWarning)
+	if len(postApplyWarnings) > 0 {
+		res.Warnings = append(res.Warnings, postApplyWarnings...)
 	}
 	res.Table = &output.Table{
 		Headers: []string{"RESULT"},

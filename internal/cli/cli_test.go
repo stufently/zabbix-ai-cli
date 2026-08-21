@@ -459,7 +459,27 @@ func TestAnUnknownSubcommandIsAUsageErrorNotSuccess(t *testing.T) {
 // internal fault.
 func TestTooManyArgumentsIsAUsageError(t *testing.T) {
 	h := newHarness(t)
-	if got := h.run("api", "call", "host.get", "extra", "args"); got.code != errs.ExitUsage {
-		t.Errorf("exit = %d, want %d (%s%s)", got.code, errs.ExitUsage, got.stdout, got.stderr)
+	for _, args := range [][]string{
+		{"api", "call", "host.get", "extra", "args"},
+		{"version", "ignored"},
+		{"profile", "list", "ignored"},
+		{"plans", "list", "ignored"},
+	} {
+		if got := h.run(args...); got.code != errs.ExitUsage {
+			t.Errorf("%v exited %d, want %d (%s%s)", args, got.code, errs.ExitUsage, got.stdout, got.stderr)
+		}
+	}
+}
+
+func TestInvalidGlobalOptionsAreUsageErrors(t *testing.T) {
+	h := newHarness(t)
+	for _, args := range [][]string{
+		{"version", "--output", "xml"},
+		{"version", "--timeout", "-1s"},
+	} {
+		got := h.run(args...)
+		if got.code != errs.ExitUsage {
+			t.Errorf("%v exited %d, want %d (%s%s)", args, got.code, errs.ExitUsage, got.stdout, got.stderr)
+		}
 	}
 }
