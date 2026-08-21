@@ -82,7 +82,8 @@ jobs:
       - name: Build the image
         run: docker build -t zabbix-ai-cli:ci .
       - name: The state directory is writable
-        run: docker run --rm zabbix-ai-cli:ci plans list | tee /dev/stderr | grep -q '"ok": true'
+        run: |
+          docker run --rm zabbix-ai-cli:ci plans list | tee /dev/stderr | grep -q '"ok": true'
 
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
