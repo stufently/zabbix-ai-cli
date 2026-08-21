@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -233,7 +235,55 @@ func newRootCommand(g *globals) *cobra.Command {
 		mcpCommand(g),
 		skillsCommand(g),
 	)
+	// A command that only groups subcommands has no Run of its own, and cobra
+	// answers "plans reject x" by printing help and exiting 0. A caller
+	// reading exit codes cannot tell that from success, so every group refuses
+	// a name it does not have. An argument that fails validation is a usage
+	// error too, not the internal error it would otherwise be reported as.
+	for _, sub := range root.Commands() {
+		requireSubcommand(sub)
+	}
+	usageArgErrors(root)
 	return root
+}
+
+func requireSubcommand(cmd *cobra.Command) {
+	for _, sub := range cmd.Commands() {
+		requireSubcommand(sub)
+	}
+	if !cmd.HasSubCommands() || cmd.Run != nil || cmd.RunE != nil {
+		return
+	}
+	names := make([]string, 0, len(cmd.Commands()))
+	for _, sub := range cmd.Commands() {
+		names = append(names, sub.Name())
+	}
+	sort.Strings(names)
+	available := strings.Join(names, ", ")
+	cmd.RunE = func(c *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			return errs.Usage("%s has no subcommand %q", c.CommandPath(), args[0]).
+				WithSuggestion("available: %s", available)
+		}
+		return errs.Usage("%s needs a subcommand", c.CommandPath()).
+			WithSuggestion("available: %s", available)
+	}
+}
+
+func usageArgErrors(cmd *cobra.Command) {
+	for _, sub := range cmd.Commands() {
+		usageArgErrors(sub)
+	}
+	if cmd.Args == nil {
+		return
+	}
+	inner := cmd.Args
+	cmd.Args = func(c *cobra.Command, args []string) error {
+		if err := inner(c, args); err != nil {
+			return errs.Usage("%s: %s", c.CommandPath(), err.Error())
+		}
+		return nil
+	}
 }
 
 func versionCommand(g *globals) *cobra.Command {

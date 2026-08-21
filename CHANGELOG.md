@@ -108,6 +108,11 @@ Also found by review:
   truncating it.
 - A failure to write the audit log after an applied change was swallowed. It is
   now reported as a warning on the result.
+- An unknown subcommand printed help and exited 0, which anything reading exit
+  codes reads as success — `plans reject x` looked like it had rejected
+  something. A command group now refuses a name it does not have, and a
+  positional argument that fails validation is a usage error rather than an
+  internal one.
 - An item whose history could not be read was reported as having no data. In
   this tool "no data" reads as "your monitoring is broken", so a database error
   looked like a dead agent. A failed read now carries `read_error`, the items

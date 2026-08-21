@@ -438,3 +438,28 @@ func TestRawApiCallWorksOnceTheScopeIsGranted(t *testing.T) {
 		t.Fatalf("maintenance.delete ran %d times", len(calls))
 	}
 }
+
+// Cobra answers an unknown subcommand by printing help and exiting 0. Anything
+// reading exit codes — a script, an agent — cannot tell that from success.
+func TestAnUnknownSubcommandIsAUsageErrorNotSuccess(t *testing.T) {
+	h := newHarness(t)
+	for _, args := range [][]string{
+		{"plans", "reject", "pl_x"},
+		{"plans"},
+		{"auth", "nonsense"},
+	} {
+		got := h.run(args...)
+		if got.code != errs.ExitUsage {
+			t.Errorf("%v exited %d, want %d (%s%s)", args, got.code, errs.ExitUsage, got.stdout, got.stderr)
+		}
+	}
+}
+
+// A positional argument that fails validation is the caller's mistake, not an
+// internal fault.
+func TestTooManyArgumentsIsAUsageError(t *testing.T) {
+	h := newHarness(t)
+	if got := h.run("api", "call", "host.get", "extra", "args"); got.code != errs.ExitUsage {
+		t.Errorf("exit = %d, want %d (%s%s)", got.code, errs.ExitUsage, got.stdout, got.stderr)
+	}
+}
