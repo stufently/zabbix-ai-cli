@@ -6,6 +6,20 @@ Nothing yet.
 
 ## [0.1.1] — 2026-08-21
 
+### Fixed
+
+- A method the registry refuses outright was reported over MCP as "api.call is
+  a write and cannot run through this tool", with a suggestion to plan it
+  instead — and the planning tool then refused it for the real reason. Found by
+  calling `usermacro.get` against the running server. A refusal now explains
+  itself the first time.
+- A binary from `go install` reported its version as `dev`, because ldflags are
+  only applied by the release build — and `go install` is the first install
+  method the README offers. It now falls back to the module version the Go
+  toolchain recorded.
+
+## [0.1.0] — 2026-08-21
+
 ### Added
 
 - 2026-08-21 — First working version.
@@ -79,16 +93,6 @@ Found by independent review of the finished implementation and fixed before rele
   can change Zabbix through it, and whether monitoring data reaches a model.
 
 ### Fixed
-
-- A method the registry refuses outright was reported over MCP as "api.call is
-  a write and cannot run through this tool", with a suggestion to plan it
-  instead — and the planning tool then refused it for the real reason. Found by
-  calling `usermacro.get` against the running server. A refusal now explains
-  itself the first time.
-- A binary from `go install` reported its version as `dev`, because ldflags are
-  only applied by the release build — and `go install` is the first install
-  method the README offers. It now falls back to the module version the Go
-  toolchain recorded.
 
 Found by review of the Go 1.27 hardening pass:
 
