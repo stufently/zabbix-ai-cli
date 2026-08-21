@@ -74,6 +74,87 @@ MCP back at `/home/deploy/bin/zabbix-ai-cli`.
 Bumping the pinned image later means editing that one `args` entry in
 `~/.claude.json` after the new tag's release finishes.
 
+## TODO — discovery and promotion
+
+Two assets do most of the work and both are already live: this repository
+carrying the `mcp-server` and `model-context-protocol` topics, and the entry in
+the official registry as `io.github.stufently/zabbix-ai-cli`. Everything below
+either follows from those or reaches an audience the MCP directories do not.
+
+Traffic figures are third-party estimates (SimilarWeb, via a May 2026 survey of
+MCP directories). They rank the work; they are not promises.
+
+### Verify what should list itself
+
+Glama and PulseMCP crawl GitHub and the official registry, so no submission is
+needed — only a check that it landed and that the card reads correctly.
+
+- [ ] Glama (~105K/mo): card exists, description not truncated, tools detected
+- [ ] PulseMCP (~277K/mo): same
+- [ ] The registry entry still resolves and points at the current version:
+      `curl -s 'https://registry.modelcontextprotocol.io/v0/servers?search=zabbix-ai-cli'`
+
+### Submit by hand
+
+Quick forms, roughly in order of reach. The `description` field is the most-read
+text in every one of them — reuse the 93-character registry description rather
+than writing something new each time.
+
+- [ ] MCP Market (~1.4M/mo)
+- [ ] mcpservers.org (~504K/mo)
+- [ ] Smithery (~446K/mo)
+- [ ] mcp.so (~238K/mo)
+- [ ] Pull request to `punkpeye/awesome-mcp-servers` — other lists copy from it
+
+### Reach the people who actually run Zabbix
+
+The MCP directories are a market of AI tooling enthusiasts. The Zabbix audience
+is somewhere else, and there this is not "another MCP server" but a fix for a
+problem they already have. Two competitors are already in the registry
+(`io.github.mhajder/zabbix-mcp`, `io.github.daedalus/mcp-zabbix`), so competing
+only on the general directories is competing for incidental traffic.
+
+- [ ] share.zabbix.com
+- [ ] Zabbix community forum
+- [ ] r/zabbix
+- [ ] Russian-language sysadmin channels; a Habr article
+- [ ] Answer existing "Zabbix + LLM" threads with a specific link, not a pitch
+
+### Write the article that is already half-written
+
+The README section on the six Zabbix 7.4 API traps — `problem.get` without
+`selectHosts`, `history.get` silently empty for float items, `lastvalue` frozen
+at `"0"`, `searchWildcardsEnabled` disabling substring matching — is original
+material that does not exist anywhere else, and every one of those produces a
+confident wrong answer rather than an error. It answers questions people search
+for, which makes it the piece most likely to be cited by both people and models.
+
+- [ ] Draft it as a standalone post, linking the tool rather than leading with it
+- [ ] Cross-post: Habr, the Zabbix forum, dev.to
+
+### Owner-only — cannot be done from the CLI
+
+- [ ] Social preview image: Settings → Social preview. It decides whether a link
+      shared on Twitter, Slack or Reddit gets clicked at all.
+- [ ] Enable private vulnerability reporting: Settings → Security. SECURITY.md
+      already points at the advisory form; the form does not exist until this is
+      switched on. The API refused it with the current token scopes.
+
+### Keep it fresh
+
+- [ ] Bump the registry entry with each release — a new version resurfaces the
+      card. This is automatic via GoReleaser; the task is to notice if it fails.
+- [ ] Check pkg.go.dev has indexed the module (asynchronous; the proxy already
+      serves v0.1.0)
+
+### Bigger, optional
+
+- [ ] A `.mcpb` bundle for Claude Desktop — one-click install removes the
+      largest adoption barrier for non-technical users
+- [ ] GitHub Pages from `docs/`: real indexable URLs, `llms.txt` and schema.org
+      markup instead of a single README. Roughly a couple of hours' work and the
+      largest remaining lever for ordinary search.
+
 ## IN_PROGRESS
 
 Nothing.
