@@ -76,6 +76,11 @@ Found by independent review of the finished implementation and fixed before rele
 
 ### Fixed
 
+- A binary from `go install` reported its version as `dev`, because ldflags are
+  only applied by the release build — and `go install` is the first install
+  method the README offers. It now falls back to the module version the Go
+  toolchain recorded.
+
 Found by review of the Go 1.27 hardening pass:
 
 - `plans list` failed outright if any one plan was claimed, discarded or expired

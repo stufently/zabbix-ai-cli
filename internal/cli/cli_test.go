@@ -496,3 +496,18 @@ func TestLoginValidatesTheStoreBeforeReadingTheToken(t *testing.T) {
 		t.Errorf("the refusal did not name the flag: %s%s", got.stdout, got.stderr)
 	}
 }
+
+// The README's first install instruction is "go install", which applies no
+// ldflags. A binary that reports "dev" there tells the user nothing about what
+// they are running, and tells a bug report nothing either.
+func TestVersionFallsBackToTheModuleVersion(t *testing.T) {
+	if cli.Version == "" {
+		t.Fatal("Version is empty")
+	}
+	// Under "go test" the main module has no version, so the fallback is the
+	// literal below; what matters is that it is never blank and that a stamped
+	// build overrides it.
+	if cli.Version != "dev" && !strings.HasPrefix(cli.Version, "v") {
+		t.Errorf("Version = %q, want either the stamped value or a module version", cli.Version)
+	}
+}

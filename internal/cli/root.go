@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"syscall"
@@ -28,8 +29,21 @@ import (
 	"github.com/stufently/zabbix-ai-cli/internal/service"
 )
 
-// Version is stamped at build time.
-var Version = "dev"
+// Version is stamped at build time by the release build.
+//
+// A binary from "go install" carries no ldflags, so it would report "dev" —
+// which is the install path the README recommends first. The module version
+// the toolchain recorded is used instead when nothing was stamped.
+var Version = versionFromBuild()
+
+func versionFromBuild() string {
+	const unstamped = "dev"
+	info, ok := debug.ReadBuildInfo()
+	if !ok || info.Main.Version == "" || info.Main.Version == "(devel)" {
+		return unstamped
+	}
+	return info.Main.Version
+}
 
 // globals holds the flags every command shares.
 type globals struct {
