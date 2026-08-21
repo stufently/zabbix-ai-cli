@@ -1,0 +1,25 @@
+# The image GoReleaser builds at release time.
+#
+# GoReleaser hands the build a context containing only this file and the
+# already-compiled binary, so this cannot be the source-building Dockerfile.
+# That one still exists for `make docker`; keep the two in step when either the
+# labels, the state directory or the entrypoint change.
+
+# distroless has no shell, so the state directory is made here and copied in
+# already owned by the unprivileged user the image runs as.
+FROM alpine:3.22 AS state
+RUN mkdir -p /out/state && chmod 700 /out/state
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY zabbix-ai-cli /usr/local/bin/zabbix-ai-cli
+COPY --from=state --chown=65532:65532 /out/state /var/lib/zabbix-ai-cli
+
+# Plans and the audit log live here. Mount a writable volume over it to keep
+# them; the root filesystem is expected to be read-only.
+ENV ZABBIX_AI_CLI_STATE_DIR=/var/lib/zabbix-ai-cli
+VOLUME /var/lib/zabbix-ai-cli
+
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/zabbix-ai-cli"]
+CMD ["mcp"]

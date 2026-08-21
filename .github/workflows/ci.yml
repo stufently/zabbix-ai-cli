@@ -85,6 +85,19 @@ jobs:
         run: |
           docker run --rm zabbix-ai-cli:ci plans list | tee /dev/stderr | grep -q '"ok": true'
 
+      # GoReleaser builds the release image from a context holding nothing but
+      # Dockerfile.release and the compiled binary. Building it any other way
+      # here would not have caught the release that failed on a missing go.sum.
+      - name: The release image builds from a binary-only context
+        run: |
+          mkdir -p /tmp/relctx
+          cp Dockerfile.release /tmp/relctx/Dockerfile
+          docker create --name extract zabbix-ai-cli:ci
+          docker cp extract:/usr/local/bin/zabbix-ai-cli /tmp/relctx/zabbix-ai-cli
+          docker rm extract
+          docker build -t zabbix-ai-cli:release-ci /tmp/relctx
+          docker run --rm zabbix-ai-cli:release-ci plans list | grep -q '"ok": true'
+
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest

@@ -1,3 +1,7 @@
+# Builds the image from source, for `make docker` and local work. The release
+# image is built by GoReleaser from Dockerfile.release, which copies an
+# already-compiled binary instead. Keep the two in step.
+#
 # Build with the latest stable Go release.
 FROM golang:1.27.0-alpine AS build
 

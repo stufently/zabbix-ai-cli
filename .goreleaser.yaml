@@ -29,7 +29,7 @@ dockers:
   - image_templates:
       - "ghcr.io/stufently/zabbix-ai-cli:{{ .Version }}"
       - "ghcr.io/stufently/zabbix-ai-cli:latest"
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.release
     build_flag_templates:
       - "--build-arg=VERSION={{ .Version }}"
       # The registry checks this label against the published server name, so an
